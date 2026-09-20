@@ -16,7 +16,28 @@ dotnet run --project TomCat.Api --no-launch-profile -- --urls http://127.0.0.1:5
 
 默认数据库为 `TomCat.Api/App_Data/tomcat.db`。通过环境变量 `Storage__Directory` 指定持久化目录，数据库和 Cookie 加密密钥都会保存在该目录。该目录已被 Git 忽略。部署时挂载持久化卷，备份应包含数据库和密钥，运行中的 SQLite 应通过备份 API 或在服务停止后备份，不能只拷贝活跃的 `.db` 文件而漏掉 WAL。
 
-生产环境必须使用 HTTPS，Cookie 设置为 Secure / HttpOnly / SameSite=Strict；将 `AllowedHosts` 改为实际域名。建议前端和 API 通过同一域名的 `/v1` 路由访问，不启用跨域 Cookie。所有写请求（包括注册、登录）必须发送 `X-TomCat-Request: 1`，配合禁止跨域 CORS 防止跨站请求。认证接口每个来源 IP 每分钟最多 20 次；代理部署时需另行配置可信转发代理及限流策略。当前密码使用 ASP.NET Core PasswordHasher 哈希。
+生产环境必须使用 HTTPS，Cookie 设置为 Secure / HttpOnly / SameSite=Strict。建议前端和 API 通过同一域名的 `/v1` 路由访问，不启用跨域 Cookie。所有写请求（包括注册、登录）必须发送 `X-TomCat-Request: 1`，配合禁止跨域 CORS 防止跨站请求。应用读取反向代理提供的 `X-Forwarded-For` 和 `X-Forwarded-Proto`，认证接口按客户端 IP 每分钟最多 20 次。当前密码使用 ASP.NET Core PasswordHasher 哈希。
+
+## Docker
+
+构建并在本机运行生产镜像：
+
+```powershell
+docker build -t tomcat-api .
+docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
+```
+
+访问 `http://127.0.0.1:8080/health` 应返回 `{"status":"ok"}`。容器会监听 `PORT`（默认 `8080`），并把 SQLite 数据库、WAL 和 Cookie 加密密钥统一写入 `/data`。
+
+## Railway 部署
+
+1. 在 Railway 新建服务并连接 `Tc_Engine_Web_backend` GitHub 仓库。根目录的 `Dockerfile` 会被自动识别，`railway.json` 会配置 `/health` 健康检查和失败重启。
+2. 给服务添加 Volume，挂载路径必须填写 `/data`。数据库和登录 Cookie 密钥都依赖此卷；没有卷时，重新部署会丢失数据并使现有登录失效。
+3. 在 Networking 中生成 Railway 域名。Railway 自动注入 `PORT`，无需手工填写端口或启动命令。
+4. 保持单副本运行。当前使用单文件 SQLite 和单个 Railway Volume，不支持多副本并发部署。
+5. 前端应通过同源 `/v1` 反向代理访问该服务。当前认证有意不开放跨域 Cookie；若前端与 API 使用不同来源，浏览器登录请求不会工作。
+
+首次部署完成后访问 `https://<你的域名>/health`。返回 HTTP 200 后，再备份 Volume，并在 Railway 中启用自动备份策略。
 
 ## 接口
 

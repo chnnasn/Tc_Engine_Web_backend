@@ -1,0 +1,9 @@
+.git
+.gitignore
+.vs
+.vscode
+**/bin
+**/obj
+**/App_Data
+tests
+README.md

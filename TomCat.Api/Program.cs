@@ -6,11 +6,18 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Data.Sqlite;
 using TomCat.Api;
 
 var builder = WebApplication.CreateBuilder(args);
+if (Environment.GetEnvironmentVariable("PORT") is { Length: > 0 } port)
+{
+    if (!int.TryParse(port, out var railwayPort) || railwayPort is < 1 or > 65535)
+        throw new InvalidOperationException("PORT must be a valid TCP port.");
+    builder.WebHost.UseUrls($"http://0.0.0.0:{railwayPort}");
+}
 // Console logging works for local development and container hosts without Windows Event Log privileges.
 builder.Logging.ClearProviders();
 builder.Logging.AddSimpleConsole();
@@ -34,6 +41,12 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 });
 builder.Services.AddAuthorization();
 builder.Services.AddProblemDetails();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
@@ -44,6 +57,7 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 app.Services.GetRequiredService<Database>().Initialize();
+app.UseForwardedHeaders();
 app.UseExceptionHandler();
 app.Use(async (context, next) =>
 {
