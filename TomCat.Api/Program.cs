@@ -40,6 +40,8 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     options.Events.OnRedirectToAccessDenied = context => { context.Response.StatusCode = 403; return Task.CompletedTask; };
 });
 builder.Services.AddAuthorization();
+builder.Services.AddSingleton<EditorSessions>();
+builder.Services.AddHttpClient("agent", client => client.Timeout = TimeSpan.FromSeconds(200));
 builder.Services.AddProblemDetails();
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
@@ -77,6 +79,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+EditorSessions.Map(app);
 
 app.MapPost("/v1/auth/register", async (Credentials input, Database db, IPasswordHasher<UserRow> hasher, HttpContext context) =>
 {

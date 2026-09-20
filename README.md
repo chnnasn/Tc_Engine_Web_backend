@@ -1,5 +1,13 @@
 # TomCat ASP.NET Core / SQLite 后端
 
+## Web AI 编辑器会话
+
+新增 `EditorSessions.cs`，为相邻 `Tc_Engine_Web_Mcp` 的 LangChain Agent 提供按账号、云端项目和浏览器会话隔离的命令通道。设置 `Agent__Url` 和至少 32 字符的 `Agent__Secret`（与 Python 的 `TOMCAT_AGENT_SECRET` 一致）后，前端可通过 AI 面板执行。
+
+`POST /v1/editor-sessions/` 注册；`GET /{id}/commands` 长轮询；`POST /{id}/commands/{commandId}/result` 回传；`POST /{id}/agent` 运行 Agent；`DELETE /{id}` 撤销。所有这些路径都在 `/v1/editor-sessions` 下且要求现有登录；写请求继续要求 X-TomCat-Request。项目所有权在访问时核对。
+
+`/internal/editor-session` 和 `/internal/editor-session/call` 只接受后端签发的随机会话 Bearer 凭证，拒绝 Origin；应限制私网访问。凭证不返回浏览器。命令结果在进程内去重，未知重试 ID 拒绝，重启使会话失效；单副本运行。Agent 最长请求约 190 秒，部署代理需允许该超时。运行 `node --test tests/*.test.mjs` 包含会话权限、结果绑定、去重、撤销测试。
+
 本仓库由 `Tc_Engine_Web_Front` 的 `codex/aspnet-sqlite` 分支迁移而来。使用 .NET 10 和 Microsoft.Data.Sqlite，SQL 参数化，启动时在事务中按 `PRAGMA user_version` 依次应用 `Migrations/001_initial.sql` 和 `002_uploads.sql`，保留已有修订。SQLite 使用 WAL 和外键约束。
 
 原生 SQLite 使用独立的 `SQLitePCLRaw.bundle_e_sqlite3` 3.0.5 依赖，避免 Microsoft.Data.Sqlite 10.0.3 默认传递引入的旧版原生库。日志写入控制台，便于本地终端和容器收集。
