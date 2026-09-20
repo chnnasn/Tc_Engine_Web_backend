@@ -26,10 +26,11 @@ public sealed class Database(string directory)
         using var transaction = connection.BeginTransaction();
         using var version = Command(connection, "PRAGMA user_version;", transaction);
         var current = Convert.ToInt32(version.ExecuteScalar());
-        if (current > 1) throw new InvalidOperationException("Database schema is newer than this API.");
-        if (current == 0)
+        string[] migrations = ["001_initial.sql", "002_uploads.sql"];
+        if (current > migrations.Length) throw new InvalidOperationException("Database schema is newer than this API.");
+        for (var index = current; index < migrations.Length; index++)
         {
-            var sql = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Migrations", "001_initial.sql"));
+            var sql = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Migrations", migrations[index]));
             using var migration = Command(connection, sql, transaction);
             migration.ExecuteNonQuery();
         }

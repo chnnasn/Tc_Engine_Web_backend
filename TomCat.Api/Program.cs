@@ -16,7 +16,7 @@ builder.Logging.ClearProviders();
 builder.Logging.AddSimpleConsole();
 var dataDirectory = Path.GetFullPath(builder.Configuration["Storage:Directory"] ?? "App_Data", builder.Environment.ContentRootPath);
 Directory.CreateDirectory(dataDirectory);
-builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 2 * 1024 * 1024);
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 16 * 1024 * 1024);
 builder.Services.AddSingleton(new Database(dataDirectory));
 builder.Services.AddSingleton<IPasswordHasher<UserRow>, PasswordHasher<UserRow>>();
 builder.Services.AddDataProtection().SetApplicationName("TomCat.Api")
@@ -98,6 +98,7 @@ app.MapPost("/v1/auth/logout", async (HttpContext context) =>
 }).RequireAuthorization();
 
 var projects = app.MapGroup("/v1/projects").RequireAuthorization();
+ProjectFiles.Map(projects);
 projects.MapGet("/", (Database db, HttpContext context) => db.ListProjects(Owner(context)));
 projects.MapPost("/", (ProjectInput input, Database db, HttpContext context) =>
 {
@@ -132,7 +133,7 @@ projects.MapDelete("/{id}", (string id, Database db, HttpContext context) =>
 
 projects.MapPost("/{id}/revisions", (string id, JsonElement payload, Database db, HttpContext context) =>
 {
-    if (!ValidRevision(payload)) return Results.BadRequest(new { error = "无效的 schemaVersion 1 项目修订。" });
+    if (!ValidRevision(payload, out var files)) return Results.BadRequest(new { error = "无效或不完整的项目修订。" });
     using var connection = db.Open();
     // Acquire the writer lock before reading ETag so two writers cannot both accept the same revision.
     using var transaction = connection.BeginTransaction(deferred: false);
@@ -144,10 +145,23 @@ projects.MapPost("/{id}/revisions", (string id, JsonElement payload, Database db
     if (match.Length == 0 && noneMatch.Length == 0) return Results.StatusCode(428);
     var matches = project.Etag is null ? noneMatch == "*" && match.Length == 0 : match == project.Etag && noneMatch.Length == 0;
     if (!matches) return Results.StatusCode(412);
+    foreach (var file in files)
+    {
+        using var check = Database.Command(connection,
+            "SELECT COUNT(*) FROM uploads WHERE id=$upload AND project_id=$project AND content_hash=$hash AND byte_length=$size;", transaction,
+            ("$upload", file.UploadId), ("$project", id), ("$hash", file.ContentHash), ("$size", file.Size));
+        if (Convert.ToInt32(check.ExecuteScalar()) != 1) return Results.BadRequest(new { error = "修订引用了缺失、内容不匹配或不属于此项目的资源。" });
+    }
     var revision = new SavedRevision(id, Database.Id(), "", Database.Now());
     revision = revision with { Etag = $"\"{revision.RevisionId}\"" };
     using (var insert = Database.Command(connection, "INSERT INTO revisions VALUES ($id, $project, $payload, $now);", transaction,
         ("$id", revision.RevisionId), ("$project", id), ("$payload", payload.GetRawText()), ("$now", revision.CreatedAt))) insert.ExecuteNonQuery();
+    foreach (var file in files)
+    {
+        using var reference = Database.Command(connection, "INSERT INTO revision_files VALUES($revision,$path,$upload);", transaction,
+            ("$revision", revision.RevisionId), ("$path", file.Path), ("$upload", file.UploadId));
+        reference.ExecuteNonQuery();
+    }
     using (var update = Database.Command(connection, "UPDATE projects SET current_revision_id = $revision, updated_at = $now WHERE id = $id;", transaction,
         ("$revision", revision.RevisionId), ("$now", revision.CreatedAt), ("$id", id))) update.ExecuteNonQuery();
     transaction.Commit();
@@ -181,16 +195,19 @@ static Task SignIn(HttpContext context, UserRow user) => context.SignInAsync(new
     [new Claim(ClaimTypes.NameIdentifier, user.Id), new Claim(ClaimTypes.Name, user.Username)], CookieAuthenticationDefaults.AuthenticationScheme)));
 static bool ValidProject(ProjectInput input) => input.Name?.Trim().Length is > 0 and <= 64 &&
     (input.Description?.Length ?? 0) <= 1000 && (input.Template is null or "2D" or "空白");
-static bool ValidRevision(JsonElement payload)
+static bool ValidRevision(JsonElement payload, out List<RevisionFile> files)
 {
+    files = [];
     if (payload.ValueKind != JsonValueKind.Object ||
-        !payload.TryGetProperty("schemaVersion", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number) || number != 1 ||
+        !payload.TryGetProperty("schemaVersion", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number)) return false;
+    if (number == 2) return ProjectFiles.TryManifest(payload, out files);
+    if (number != 1 ||
         !payload.TryGetProperty("project", out var project) || project.ValueKind != JsonValueKind.String ||
         !payload.TryGetProperty("settings", out var settings) || !StringMap(settings) ||
         !payload.TryGetProperty("scenes", out var scenes) || !StringMap(scenes) ||
         !payload.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) return false;
-    return assets.EnumerateArray().All(asset => asset.ValueKind == JsonValueKind.Object &&
-        new[] { "handle", "contentHash", "uploadId" }.All(key => asset.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String));
+    // Existing v1 revisions remain readable; new resource-bearing revisions must use v2.
+    return assets.GetArrayLength() == 0;
 }
 static bool StringMap(JsonElement element) => element.ValueKind == JsonValueKind.Object &&
     element.EnumerateObject().All(property => property.Value.ValueKind == JsonValueKind.String);

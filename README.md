@@ -1,6 +1,6 @@
 # TomCat ASP.NET Core / SQLite 后端
 
-本仓库由 `Tc_Engine_Web_Front` 的 `codex/aspnet-sqlite` 分支迁移而来。使用 .NET 10 和 Microsoft.Data.Sqlite，SQL 参数化，启动时在事务中按 `PRAGMA user_version` 应用 `Migrations/001_initial.sql`。SQLite 使用 WAL 和外键约束。
+本仓库由 `Tc_Engine_Web_Front` 的 `codex/aspnet-sqlite` 分支迁移而来。使用 .NET 10 和 Microsoft.Data.Sqlite，SQL 参数化，启动时在事务中按 `PRAGMA user_version` 依次应用 `Migrations/001_initial.sql` 和 `002_uploads.sql`，保留已有修订。SQLite 使用 WAL 和外键约束。
 
 原生 SQLite 使用独立的 `SQLitePCLRaw.bundle_e_sqlite3` 3.0.5 依赖，避免 Microsoft.Data.Sqlite 10.0.3 默认传递引入的旧版原生库。日志写入控制台，便于本地终端和容器收集。
 
@@ -34,23 +34,31 @@ dotnet run --project TomCat.Api --no-launch-profile -- --urls http://127.0.0.1:5
 | GET / POST | `/v1/projects/{id}/revisions` | 版本列表 / 保存不可变修订 |
 | GET | `/v1/projects/{id}/revisions/{revisionId}` | 读取原始修订 JSON |
 
-用户名允许 3–32 个字母、数字或下划线，不区分大小写；密码 12–128 字符。创建项目使用 `{ name, description, template }`，模板为 `2D` 或 `空白`。PUT 更新名称和描述，模板创建后固定。请求体上限 2 MiB。
+用户名允许 3–32 个字母、数字或下划线，不区分大小写；密码 12–128 字符。创建项目使用 `{ name, description, template }`，模板为 `2D` 或 `空白`。PUT 更新名称和描述，模板创建后固定。一般请求体上限 16 MiB，单个资源上传上限 8 MiB。
 
-保存修订契约与前端仓库的 `src/platform/cloud-client.ts` 一致。首次保存要求 `If-None-Match: *`，随后必须发送上次返回的 `If-Match: "revisionId"`。缺少条件返回 428，过期条件返回 412 和当前 ETag。版本插入和项目指针更新在同一个持有写锁的事务中完成，防止并发覆盖。
+完整保存使用前端 `src/engine/cloud.ts` 的 schemaVersion 2 契约。首次修订要求 `If-None-Match: *`，随后发送上次返回的 `If-Match: "revisionId"`。缺少条件返回 428，过期条件返回 412；客户端必须保留旧凭据和本地草稿，不得自动覆盖。
+
+先对每个文件计算 SHA-256，通过 `PUT /v1/projects/{id}/uploads/{contentHash}` 上传原始二进制内容。成功返回 `{ uploadId, contentHash, size }`；同项目相同内容幂等复用。`GET /v1/projects/{id}/uploads/{uploadId}` 返回原始字节，仅项目所有者可访问。所有上传写请求仍要求认证 Cookie 和 X-TomCat-Request。
+
+然后 POST 修订清单：
 
 ```json
 {
-  "schemaVersion": 1,
-  "project": "Project.tcproj 的文本内容",
-  "settings": { "BuildSettings.json": "{}" },
-  "scenes": { "18446744073709551615": "场景文本" },
-  "assets": []
+  "schemaVersion": 2,
+  "engineCommit": "40 位固定引擎提交",
+  "sceneHandle": "18446744073709551615",
+  "archive": "活动场景归档文本",
+  "files": [
+    { "path": "Project.tcproj", "uploadId": "32 位上传 ID", "contentHash": "64 位 SHA-256", "size": 123 }
+  ]
 }
 ```
 
-资产字段当前只保存元数据，尚未校验上传文件、内容哈希与引擎语义。场景及 Handle 保持字符串。本版本尚未实现资源上传、发布任务、管理员、密码重置或账号级会话撤销；`publish/release` 客户端方法仍预留，服务端没有对应接口。退出登录清除客户端 Cookie，未建立服务器端会话撤销表。
+上例只展示文件项格式；实际必须包含 `Project.tcproj`、`ProjectSettings/BuildSettings.json`、`ProjectSettings/ProjectSettings.json`、`ProjectSettings/PlayerSettings.json`，以及全部 Assets 源文件。每张图片必须附带同路径 `.tcmeta`，meta 也必须有源文件。清单最多 512 个文件、总量 36 MiB，活动场景归档上限 4 MiB；拒绝路径穿越及大小写重复路径。所有 uint64 Handle 保持字符串。
 
-Vue 页面仍使用本地原型数据，没有自动改为云端模式。后续需接入登录界面、项目 API，并把场景转换成实际引擎协议，再替换 localStorage 流程。
+修订事务持有写锁，校验 ETag、资源所属项目、实际哈希和长度，将修订、文件引用与项目指针一并提交。上传缺失、伪造或跨项目引用不会生成修订。文件为不可变 SQLite BLOB，历史修订始终引用原字节；新上传不会改变旧修订。每项目存储额度 256 MiB，每账号 1 GiB；后续上传时清理该项目超过 24 小时且无修订引用的孤立上传。已引用资源随历史版本保留，删除项目会级联删除全部资源。
+
+旧 schemaVersion 1 修订保持可读；新写入 v1 仅允许空 assets，不能冒充完整资源备份。API 校验结构及完整性，场景/配置/图片的引擎语义由固定版本 WASM 在恢复时验证。尚未实现发布、密码重置和服务器端会话撤销；退出登录清除客户端 Cookie。
 
 ## 验收
 
@@ -59,4 +67,4 @@ dotnet build TomCat.Api -c Release --no-restore
 node --test tests/api.test.mjs
 ```
 
-脚本启动真实 Kestrel 和临时 SQLite 数据库，验证注册登录、项目归属、版本不可变、ETag 竞争、重启持久化与删除。只创建测试账户和临时数据，不使用开发数据库。测试退出后关闭子进程并清理它创建的临时目录。
+脚本启动真实 Kestrel 和临时 SQLite 数据库，验证旧数据库迁移、注册登录、上传及去重、哈希和大小限制、项目归属、修订引用完整性、ETag 竞争、历史字节不可变、重启持久化与级联删除。只创建测试账户和临时数据，不使用开发数据库。测试退出后关闭子进程并清理它创建的临时目录。
