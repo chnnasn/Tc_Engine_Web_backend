@@ -105,9 +105,14 @@ test('Redis working snapshots and SQLite checkpoints', { timeout: 90000, skip: !
       const old = token
       const update = await put('manual-latest'); token = update.headers.get('etag')
       assert.equal((await request(`/projects/${project.id}/revisions`, { method: 'POST', body: manifest, headers: { 'If-Match': old } })).status, 412)
-      const response = await request(`/projects/${project.id}/revisions`, { method: 'POST', body: { ...manifest, archive: 'manual-final' }, headers: { 'If-Match': token } })
+      const aiCheckpoint = { runId: 'c'.repeat(32), phase: 'start', sceneVersion: '123:5' }
+      assert.equal((await request(`/projects/${project.id}/working-state`, { method: 'PUT', body: { ...manifest, aiCheckpoint }, headers: { 'If-Match': token } })).status, 400)
+      const response = await request(`/projects/${project.id}/revisions`, { method: 'POST', body: { ...manifest, archive: 'manual-final', aiCheckpoint }, headers: { 'If-Match': token } })
       assert.equal(response.status, 201); token = response.headers.get('etag'); assert.equal(count(), 2)
       assert.equal((await (await request(`/projects/${project.id}/working-state`)).json()).archive, 'manual-final')
+      const checkpoint = (await (await request(`/projects/${project.id}/revisions`)).json()).find(r => r.revisionId === token.slice(1, -1))
+      assert.deepEqual(checkpoint.aiCheckpoint, aiCheckpoint)
+      assert.equal((await (await request(`/projects/${project.id}/sync-status`)).json()).persisted, true)
     })
     await t.test('Redis outage fails explicitly without silently writing stale data', async () => {
       await redis.stop()

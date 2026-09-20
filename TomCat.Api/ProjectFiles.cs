@@ -24,6 +24,7 @@ public static class ProjectFiles
     public static bool TryManifest(JsonElement payload, out List<RevisionFile> files)
     {
         files = [];
+        if (payload.TryGetProperty("aiCheckpoint", out _) && AiCheckpoint.Read(payload) is null) return false;
         if (!payload.TryGetProperty("engineCommit", out var commit) || commit.ValueKind != JsonValueKind.String ||
             !Regex.IsMatch(commit.GetString()!, "^[a-f0-9]{40}$") ||
             !payload.TryGetProperty("sceneHandle", out var scene) || scene.ValueKind != JsonValueKind.String ||

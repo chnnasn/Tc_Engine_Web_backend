@@ -37,7 +37,7 @@ public sealed class EditorSessions
     private readonly ConcurrentDictionary<string, Session> sessions = new();
     public static readonly HashSet<string> Tools = ["editor_get_status", "scene_get_tree", "entity_get", "component_get_schema",
         "entity_create", "entity_delete", "entity_reparent", "component_add", "component_remove", "component_set",
-        "editor_play", "editor_pause", "editor_stop", "history_undo", "history_redo"];
+        "editor_play", "editor_pause", "editor_stop", "history_undo", "history_redo", "project_get_sync_status"];
 
     private Session? Find(string id, Database db)
     {

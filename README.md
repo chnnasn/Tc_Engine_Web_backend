@@ -100,6 +100,8 @@ node --test tests/api.test.mjs
 
 ## Redis 自动同步与定期落库
 
+AI 任务检查点复用 `POST /v1/projects/{id}/revisions`，其 schemaVersion 2 清单可带 `aiCheckpoint: { runId, phase: "start" | "end", sceneVersion }`。元数据与场景、资源引用一同保存在不可变修订中，历史列表返回此字段；不需要新数据库迁移。Redis 模式也立即落库，`PUT /working-state` 拒绝带检查点的延迟保存。检查点沿用项目所有权及 If-Match/If-None-Match 检查，不代表自动回滚或 Agent 断点续跑。
+
 配置 `Redis__ConnectionString` 后启用；留空继续使用原有手动保存。仅支持单个 API 实例和独立 Redis（不支持 Redis Cluster）；不同数据库必须使用不同的 `Redis__KeyPrefix`，且只能由一个 API 进程写入。
 
 本地运行（Docker 环境）：

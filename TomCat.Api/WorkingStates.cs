@@ -68,6 +68,7 @@ public sealed class WorkingStates(Database db, IConfiguration config, ILogger<Wo
     public async Task<IResult> Write(string id, JsonElement payload, List<RevisionFile> files, HttpContext context, bool flush)
     {
         if (!Enabled) return Results.Json(new { error = "服务器未启用自动同步。" }, statusCode: 503);
+        if (!flush && payload.TryGetProperty("aiCheckpoint", out _)) return Results.BadRequest(new { error = "AI 检查点必须通过修订接口立即落库。" });
         await gate.WaitAsync(context.RequestAborted);
         try
         {

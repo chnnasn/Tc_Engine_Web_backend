@@ -205,10 +205,19 @@ projects.MapGet("/{id}/revisions", (string id, Database db, HttpContext context)
 {
     using var connection = db.Open();
     if (Database.GetProject(connection, Owner(context), id) is null) return Results.NotFound();
-    using var command = Database.Command(connection, "SELECT id, created_at FROM revisions WHERE project_id = $id ORDER BY created_at DESC;", null, ("$id", id));
+    using var command = Database.Command(connection, "SELECT id, created_at, json_object('aiCheckpoint', json_extract(payload, '$.aiCheckpoint')) FROM revisions WHERE project_id = $id ORDER BY created_at DESC;", null, ("$id", id));
     using var reader = command.ExecuteReader();
     var revisions = new List<SavedRevision>();
-    while (reader.Read()) revisions.Add(new(id, reader.GetString(0), $"\"{reader.GetString(0)}\"", reader.GetString(1)));
+    while (reader.Read())
+    {
+        AiCheckpoint? checkpoint = null;
+        if (!reader.IsDBNull(2))
+        {
+            using var payload = JsonDocument.Parse(reader.GetString(2));
+            checkpoint = AiCheckpoint.Read(payload.RootElement);
+        }
+        revisions.Add(new(id, reader.GetString(0), $"\"{reader.GetString(0)}\"", reader.GetString(1), checkpoint));
+    }
     return Results.Ok(revisions);
 });
 projects.MapGet("/{id}/revisions/{revisionId}", (string id, string revisionId, Database db, HttpContext context) =>

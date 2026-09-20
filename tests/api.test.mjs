@@ -174,6 +174,8 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       const bytes = fileBytes.get('Project.tcproj')
       const foreign = await (await request(`/v1/projects/${other.id}/uploads/${hash(bytes)}`, { method: 'PUT', bytes })).json()
       const variants = [
+        { ...manifest, aiCheckpoint: { runId: '../wrong', phase: 'start', sceneVersion: '1:0' } },
+        { ...manifest, aiCheckpoint: { runId: 'a'.repeat(32), phase: 'other', sceneVersion: '1:0' } },
         { ...manifest, files: manifest.files.slice(1) },
         { ...manifest, files: manifest.files.filter(file => !file.path.endsWith('.tcmeta')) },
         { ...manifest, files: [...manifest.files, manifest.files[0]] },
