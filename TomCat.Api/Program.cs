@@ -25,6 +25,8 @@ var dataDirectory = Path.GetFullPath(builder.Configuration["Storage:Directory"] 
 Directory.CreateDirectory(dataDirectory);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 16 * 1024 * 1024);
 builder.Services.AddSingleton(new Database(dataDirectory));
+builder.Services.AddSingleton<WorkingStates>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<WorkingStates>());
 builder.Services.AddSingleton<IPasswordHasher<UserRow>, PasswordHasher<UserRow>>();
 builder.Services.AddDataProtection().SetApplicationName("TomCat.Api")
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDirectory, "keys")));
@@ -73,7 +75,12 @@ app.Use(async (context, next) =>
         return;
     }
     context.Response.Headers.CacheControl = "no-store";
-    await next(context);
+    try { await next(context); }
+    catch (StackExchange.Redis.RedisException)
+    {
+        context.Response.StatusCode = 503;
+        await context.Response.WriteAsJsonAsync(new { error = "自动同步服务暂不可用，本地草稿已保留，请稍后重试。" });
+    }
 });
 app.UseRateLimiter();
 app.UseAuthentication();
@@ -116,17 +123,31 @@ app.MapPost("/v1/auth/logout", async (HttpContext context) =>
 
 var projects = app.MapGroup("/v1/projects").RequireAuthorization();
 ProjectFiles.Map(projects);
-projects.MapGet("/", (Database db, HttpContext context) => db.ListProjects(Owner(context)));
+projects.MapGet("/sync-config", (WorkingStates states) => Results.Ok(new { enabled = states.Enabled, intervalMs = 2000 }));
+projects.MapGet("/{id}/working-state", (string id, WorkingStates states, HttpContext context) => states.Restore(id, context));
+projects.MapGet("/{id}/sync-status", (string id, WorkingStates states, HttpContext context) => states.Status(id, context));
+projects.MapPut("/{id}/working-state", (string id, JsonElement payload, WorkingStates states, HttpContext context) =>
+    ValidRevision(payload, out var files) && payload.GetProperty("schemaVersion").GetInt32() == 2
+        ? states.Write(id, payload, files, context, false)
+        : Task.FromResult<IResult>(Results.BadRequest(new { error = "无效或不完整的项目快照。" })));
+
+projects.MapGet("/", async (Database db, WorkingStates states, HttpContext context) =>
+{
+    var list = new List<ProjectRow>();
+    foreach (var project in db.ListProjects(Owner(context))) list.Add(await states.Latest(project));
+    return Results.Ok(list);
+});
 projects.MapPost("/", (ProjectInput input, Database db, HttpContext context) =>
 {
     if (!ValidProject(input)) return Results.BadRequest(new { error = "项目名须为 1–64 字，描述不超过 1000 字，模板须为 2D 或空白。" });
     var project = db.CreateProject(Owner(context), input);
     return Results.Created($"/v1/projects/{project.Id}", project);
 });
-projects.MapGet("/{id}", (string id, Database db, HttpContext context) =>
+projects.MapGet("/{id}", async (string id, Database db, WorkingStates states, HttpContext context) =>
 {
     using var connection = db.Open();
     var project = Database.GetProject(connection, Owner(context), id);
+    if (project is not null) project = await states.Latest(project);
     if (project?.Etag is { } etag) context.Response.Headers.ETag = etag;
     return project is null ? Results.NotFound() : Results.Ok(project);
 });
@@ -140,17 +161,12 @@ projects.MapPut("/{id}", (string id, ProjectInput input, Database db, HttpContex
         ("$now", Database.Now()), ("$id", id), ("$owner", Owner(context)));
     return command.ExecuteNonQuery() == 0 ? Results.NotFound() : Results.Ok(Database.GetProject(connection, Owner(context), id));
 });
-projects.MapDelete("/{id}", (string id, Database db, HttpContext context) =>
-{
-    using var connection = db.Open();
-    using var command = Database.Command(connection, "DELETE FROM projects WHERE id = $id AND owner_id = $owner;", null,
-        ("$id", id), ("$owner", Owner(context)));
-    return command.ExecuteNonQuery() == 0 ? Results.NotFound() : Results.NoContent();
-});
+projects.MapDelete("/{id}", (string id, WorkingStates states, HttpContext context) => states.Delete(id, context));
 
-projects.MapPost("/{id}/revisions", (string id, JsonElement payload, Database db, HttpContext context) =>
+projects.MapPost("/{id}/revisions", async (string id, JsonElement payload, Database db, WorkingStates states, HttpContext context) =>
 {
     if (!ValidRevision(payload, out var files)) return Results.BadRequest(new { error = "无效或不完整的项目修订。" });
+    if (states.Enabled) return await states.Write(id, payload, files, context, true);
     using var connection = db.Open();
     // Acquire the writer lock before reading ETag so two writers cannot both accept the same revision.
     using var transaction = connection.BeginTransaction(deferred: false);

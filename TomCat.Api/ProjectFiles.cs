@@ -59,6 +59,14 @@ public static class ProjectFiles
     public static void Map(RouteGroupBuilder projects)
     {
         projects.MapPut("/{id}/uploads/{contentHash}", Upload);
+        projects.MapGet("/{id}/uploads/by-hash/{hash}", (string id, string hash, Database db, HttpContext context) =>
+        {
+            using var sql = db.Open();
+            if (Database.GetProject(sql, context.User.FindFirstValue(ClaimTypes.NameIdentifier)!, id) is null) return Results.NotFound();
+            using var read = Database.Command(sql, "SELECT id,byte_length FROM uploads WHERE project_id=$id AND content_hash=$hash;", null, ("$id", id), ("$hash", hash));
+            using var row = read.ExecuteReader();
+            return row.Read() ? Results.Ok(new UploadRow(row.GetString(0), hash, row.GetInt64(1))) : Results.NotFound();
+        });
         projects.MapGet("/{id}/uploads/{uploadId}", (string id, string uploadId, Database db, HttpContext context) =>
         {
             using var connection = db.Open();
@@ -73,7 +81,7 @@ public static class ProjectFiles
         });
     }
 
-    private static async Task<IResult> Upload(string id, string contentHash, Database db, HttpContext context)
+    private static async Task<IResult> Upload(string id, string contentHash, Database db, WorkingStates states, HttpContext context)
     {
         var owner = context.User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         using var connection = db.Open();
@@ -93,6 +101,8 @@ public static class ProjectFiles
             return Results.BadRequest(new { error = "上传内容与 SHA-256 不一致。" });
         using var transaction = connection.BeginTransaction(deferred: false);
         if (Database.GetProject(connection, owner, id, transaction) is null) return Results.NotFound();
+        // Redis snapshots may reference uploads not yet in revision_files. Keep these until project deletion.
+        if (!states.Enabled)
         using (var cleanup = Database.Command(connection,
             "DELETE FROM uploads WHERE project_id=$project AND created_at < $cutoff AND NOT EXISTS(SELECT 1 FROM revision_files WHERE upload_id=uploads.id);", transaction,
             ("$project", id), ("$cutoff", DateTimeOffset.UtcNow.AddHours(-24).ToString("O")))) cleanup.ExecuteNonQuery();

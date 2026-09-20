@@ -97,3 +97,45 @@ node --test tests/api.test.mjs
 ```
 
 脚本启动真实 Kestrel 和临时 SQLite 数据库，验证旧数据库迁移、注册登录、上传及去重、哈希和大小限制、项目归属、修订引用完整性、ETag 竞争、历史字节不可变、重启持久化与级联删除。只创建测试账户和临时数据，不使用开发数据库。测试退出后关闭子进程并清理它创建的临时目录。
+
+## Redis 自动同步与定期落库
+
+配置 `Redis__ConnectionString` 后启用；留空继续使用原有手动保存。仅支持单个 API 实例和独立 Redis（不支持 Redis Cluster）；不同数据库必须使用不同的 `Redis__KeyPrefix`，且只能由一个 API 进程写入。
+
+本地运行（Docker 环境）：
+
+```powershell
+docker compose -f compose.redis.yml up -d
+$env:Redis__ConnectionString = '127.0.0.1:6379'
+$env:Redis__FlushIntervalSeconds = '30'
+$env:ASPNETCORE_ENVIRONMENT = 'Development'
+dotnet run --project TomCat.Api --no-launch-profile -- --urls http://127.0.0.1:5080
+```
+
+线上设置同名环境变量，使用私有 Redis 地址及其认证/TLS 参数。不要把 Redis 端口暴露到公网。Redis 与 SQLite 各自需要持久化卷；示例 Compose 使用 AOF everysec 和 noeviction。AOF everysec 在故障时仍可能丢失最近约一秒的写入，不能视为零丢失保证。参考 [Redis persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/)。
+
+编辑器在编辑模式下，每次同步完成后约 2 秒捕获一次完整项目；内容未变不再上传。先将草稿和原 ETag 写入 IndexedDB，再检查资源 SHA-256，复用服务器已有文件，仅上传缺失的二进制文件。场景归档仍然全量同步，不是对象级操作增量，也未加入哈夫曼编码。资源二进制继续保存在 SQLite，Redis 保存完整场景归档及资源引用清单。
+
+- `GET /v1/projects/sync-config`：是否开启自动同步。
+- `PUT /v1/projects/{id}/working-state`：提交 schemaVersion 2 快照；要求原有 If-Match/If-None-Match 条件，成功返回 202、新 ETag 和 persisted=false。
+- `GET /v1/projects/{id}/working-state`：优先读取 Redis；无工作快照时读取 SQLite 最新修订。
+- `GET /v1/projects/{id}/sync-status`：当前 ETag 和是否已落库。
+- `GET /v1/projects/{id}/uploads/by-hash/{hash}`：查询可复用文件，仅限项目所有者。
+- 原 `POST /revisions` 在 Redis 模式下检查最新工作版本，并立即落库；历史修订接口只列已落库版本。
+
+Redis key 为 `{prefix}project:{projectId}:state`，另有 `{prefix}dirty` 待落库集合；快照与 dirty 标记通过 Lua 一起写入，没有过期时间。后台默认每 30 秒将最新快照及文件引用在 SQLite 事务内保存，保留相同 ETag，提交成功后清理 Redis。数据库提交后、Redis 清理前发生崩溃，可根据同一修订 ID 重试而不重复创建版本。多次短间隔编辑合并成一个检查点，不会保留每个操作的历史。
+
+自动同步仅在已关联云端的项目中开启。前端区分“已同步，等待定期落库”和“已自动保存到数据库”，确认落库且当前内容未变后才标记已保存。Redis 故障返回 503，保留本地草稿并重试；401/412 暂停上传但继续保存本地草稿，不会自动采用新 ETag 覆盖其他编辑者。请求已成功但应答丢失时，重试可能得到 412，需要恢复最新状态比较。
+
+为防止清理尚被 Redis 引用的文件，开启 Redis 时暂时禁用原来的 24 小时孤立上传清理；项目及账号存储额度仍生效，删除项目会删除全部资源。资源回收尚未细化到待同步引用，长时间编辑或反复失败可能积累孤立文件。停用 Redis 或切换 namespace 之前须先排空 dirty 集合，避免忽略待落库快照。
+
+验证：
+
+```powershell
+dotnet build TomCat.Api -c Release
+node --test tests/api.test.mjs
+$env:TEST_REDIS_SERVER = '你的 redis-server 可执行文件绝对路径'
+node --test tests/redis.test.mjs
+```
+
+Redis 集成测试使用临时 Redis、临时 SQLite 和测试账号，覆盖权限、并发条件、Redis/API 重启、定时落库、提交后重复执行、立即保存、故障和删除。Redis 可执行文件旁需有 redis-cli；测试使用独立随机端口。
