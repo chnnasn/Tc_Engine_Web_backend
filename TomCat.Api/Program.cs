@@ -44,6 +44,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 builder.Services.AddAuthorization();
 builder.Services.AddSingleton<EditorSessions>();
 builder.Services.AddSingleton<GameCatalog>();
+builder.Services.AddHostedService<CookWorker>();
 builder.Services.AddHttpClient("agent", client => client.Timeout = TimeSpan.FromSeconds(200));
 builder.Services.AddProblemDetails();
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
@@ -125,6 +126,7 @@ app.MapPost("/v1/auth/logout", async (HttpContext context) =>
 
 var projects = app.MapGroup("/v1/projects").RequireAuthorization();
 ProjectFiles.Map(projects);
+PublishEndpoints.Map(projects, app);
 projects.MapGet("/sync-config", (WorkingStates states) => Results.Ok(new { enabled = states.Enabled, intervalMs = 2000 }));
 projects.MapGet("/{id}/working-state", (string id, WorkingStates states, HttpContext context) => states.Restore(id, context));
 projects.MapGet("/{id}/sync-status", (string id, WorkingStates states, HttpContext context) => states.Status(id, context));

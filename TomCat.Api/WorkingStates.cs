@@ -119,6 +119,19 @@ public sealed class WorkingStates(Database db, IConfiguration config, ILogger<Wo
         tx.Commit();
         await Remove(state.Project);
     }
+    // Publishing cooks the persisted revision, so any pending Redis snapshot must become a
+    // real revision first; baseline conflicts surface as InvalidOperationException to the caller.
+    public async Task Flush(string id, HttpContext context)
+    {
+        if (!Enabled) return;
+        await gate.WaitAsync(context.RequestAborted);
+        try
+        {
+            var state = await Read(id);
+            if (state is not null) await Persist(state);
+        }
+        finally { gate.Release(); }
+    }
     public async Task<ProjectRow> Latest(ProjectRow project)
     {
         if (!Enabled) return project;

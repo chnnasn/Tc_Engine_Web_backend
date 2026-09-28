@@ -49,7 +49,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 接口
 
-除健康检查、注册和登录外，接口均要求登录；其他用户的项目返回 404。
+除健康检查、注册、登录和已发布作品的公开游玩接口外，接口均要求登录；其他用户的项目返回 404。
 
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
@@ -62,6 +62,10 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 | GET / PUT / DELETE | `/v1/projects/{id}` | 读取 / 更新名称描述 / 删除项目及版本 |
 | GET / POST | `/v1/projects/{id}/revisions` | 版本列表 / 保存不可变修订 |
 | GET | `/v1/projects/{id}/revisions/{revisionId}` | 读取原始修订 JSON |
+| POST / GET / DELETE | `/v1/projects/{id}/publish` | 发布 `{ title, description }` / 查询状态 / 取消发布 |
+| GET | `/v1/games/published` | 公开列出已发布作品（游客可访问） |
+| GET | `/v1/games/published/{id}` | 公开作品详情（游客可访问） |
+| GET | `/v1/games/published/{id}/package` | 公开游戏包下载，ETag 为内容 SHA-256（游客可访问） |
 
 用户名允许 3–32 个字母、数字或下划线，不区分大小写；密码 12–128 字符。创建项目使用 `{ name, description, template }`，模板为 `2D` 或 `空白`。PUT 更新名称和描述，模板创建后固定。一般请求体上限 16 MiB，单个资源上传上限 8 MiB。
 
@@ -87,16 +91,32 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 修订事务持有写锁，校验 ETag、资源所属项目、实际哈希和长度，将修订、文件引用与项目指针一并提交。上传缺失、伪造或跨项目引用不会生成修订。文件为不可变 SQLite BLOB，历史修订始终引用原字节；新上传不会改变旧修订。每项目存储额度 256 MiB，每账号 1 GiB；后续上传时清理该项目超过 24 小时且无修订引用的孤立上传。已引用资源随历史版本保留，删除项目会级联删除全部资源。
 
-旧 schemaVersion 1 修订保持可读；新写入 v1 仅允许空 assets，不能冒充完整资源备份。API 校验结构及完整性，场景/配置/图片的引擎语义由固定版本 WASM 在恢复时验证。尚未实现发布、密码重置和服务器端会话撤销；退出登录清除客户端 Cookie。
+旧 schemaVersion 1 修订保持可读；新写入 v1 仅允许空 assets，不能冒充完整资源备份。API 校验结构及完整性，场景/配置/图片的引擎语义由固定版本 WASM 在恢复时验证。尚未实现密码重置和服务器端会话撤销；退出登录清除客户端 Cookie。
+
+## 作品发布与打包
+
+发布把项目最新一次云端保存的修订交给上游 `TomCatCLI cook` 打包为 TCPAK，产出对游客公开的游戏包。发布前会先把 Redis 待落库快照固化为正式修订（基线冲突返回 409）；同一项目同时只允许一个进行中的发布任务（409），失败会记录原因并可在排除问题后重新发布。取消发布或删除项目会立即移除公开入口（删除项目经外键级联）。CookWorker 为单实例设计：同一时刻只打包一个任务，进程重启后未完成任务自动重试。
+
+配置：
+
+- `Cook__CliPath`：打包工具可执行文件路径。未配置或文件不存在时，发布接口返回 503。
+- `Cook__CliArgs`：参数模板（默认 `cook --project "{project}" --output "{output}"`），支持上游包装形式，例如 `--cli cook --project "{project}" --output "{output}"`。
+- `Cook__TimeoutSeconds`：单次打包超时（默认 900，下限 30）；超时 kills 整个进程树。
+- `Cook__PollSeconds`：后台任务轮询间隔（默认 3）。
+
+打包过程：worker 把修订清单中的文件与上传字节物化到临时目录；由于 Web 编辑会话的场景只存在于归档字符串（MEMFS 磁盘上没有场景文件），worker 会写出 `Assets/Scene/WebScene.tomcat`、对应 `.tcmeta`，并把 `ProjectSettings/BuildSettings.json` 指向该场景（`entrySceneHandle` = 修订的 `sceneHandle`），与上游 `Samples/PhysicsPlayground` 的磁盘布局一致。随后运行 CLI（会先编译并校验 C# 源码，要求 `BuildSettings` 配置了入口场景），读取产出的游戏包，按内容 SHA-256 记录入库。游戏包上限 256 MiB，ETag 即 SHA-256，缓存策略与内置示例包一致（immutable + 304）。用户项目是喂给原生打包工具的不可信输入：物化在一次性临时目录中，路径经过 `SafePath` 白名单，资源字节在读取时重新校验归属与哈希，CLI 以独立进程运行并受超时约束。
+
+获取打包工具（见上游 `Tools/TomCatCLI/README.md`）：源码构建需要在 Visual Studio 开发者环境中执行 `vendor/premake/bin/premake5.exe --file=Tools/premake5.lua vs2022` 后 `msbuild Tools/Tools.sln -p:Configuration=Release -p:Platform=x64`，产物位于 `Tools/bin/Release-windows-x86_64/TomCatCLI/`；官方 Editor 发行版可直接用 `TomCat.exe --cli cook ...`。CLI 与网页引擎应来自 `engine.lock.json` 锁定的同一引擎提交；打包工具需要在部署平台（Railway 为 linux-x64）可用。
 
 ## 验收
 
 ```powershell
 dotnet build TomCat.Api -c Release --no-restore
 node --test tests/api.test.mjs
+node --test tests/publish.test.mjs
 ```
 
-脚本启动真实 Kestrel 和临时 SQLite 数据库，验证旧数据库迁移、注册登录、上传及去重、哈希和大小限制、项目归属、修订引用完整性、ETag 竞争、历史字节不可变、重启持久化与级联删除。只创建测试账户和临时数据，不使用开发数据库。测试退出后关闭子进程并清理它创建的临时目录。
+脚本启动真实 Kestrel 和临时 SQLite 数据库，验证旧数据库迁移、注册登录、上传及去重、哈希和大小限制、项目归属、修订引用完整性、ETag 竞争、历史字节不可变、重启持久化与级联删除。`tests/publish.test.mjs` 以确定性假 CLI 走通完整发布链路：保存修订 → 发布 → 物化与打包 → 公开列表/详情/游戏包/304 → 失败报告与重试 → 取消发布与级联删除，并验证未配置 `Cook__CliPath` 时返回 503。只创建测试账户和临时数据，不使用开发数据库。测试退出后关闭子进程并清理它创建的临时目录。
 
 ## Redis 自动同步与定期落库
 
