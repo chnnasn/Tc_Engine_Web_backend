@@ -51,7 +51,7 @@ public static class ProjectFiles
         foreach (var file in files)
         {
             if (file.Path.EndsWith(".tcmeta", StringComparison.Ordinal) && !files.Exists(other => other.Path == file.Path[..^7])) return false;
-            if (new[] { ".png", ".jpg", ".jpeg", ".tga" }.Contains(System.IO.Path.GetExtension(file.Path).ToLowerInvariant()) &&
+            if (new[] { ".png", ".jpg", ".jpeg", ".tga", ".cs" }.Contains(System.IO.Path.GetExtension(file.Path).ToLowerInvariant()) &&
                 !files.Exists(other => other.Path == file.Path + ".tcmeta")) return false;
         }
         return true;

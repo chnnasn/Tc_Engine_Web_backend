@@ -85,6 +85,28 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       db.close()
     })
 
+    await t.test('sample game packages are public, immutable and content-addressed', async () => {
+      // 游客未登录也应能列出并下载示例包（作品详情页对未登录用户开放）。
+      const catalog = await (await request('/v1/games', { user: 'anonymous' })).json()
+      assert.deepEqual(catalog.map(entry => entry.id), ['desert', 'forest', 'puzzle'])
+      for (const entry of catalog) {
+        const response = await request(`/v1/games/${entry.id}/package`, { user: 'anonymous' })
+        assert.equal(response.status, 200)
+        assert.equal(response.headers.get('content-type'), 'application/octet-stream')
+        assert.equal(response.headers.get('etag'), entry.etag)
+        assert.match(response.headers.get('cache-control'), /immutable/)
+        assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
+        const bytes = Buffer.from(await response.arrayBuffer())
+        assert.equal(bytes.length, entry.byteLength)
+        assert.equal(bytes.subarray(0, 8).toString('ascii'), 'TCPACK01')
+        assert.equal(bytes.readUInt32LE(8), 7)
+        assert.equal(`"${createHash('sha256').update(bytes).digest('hex')}"`, entry.etag)
+        assert.equal((await request(`/v1/games/${entry.id}/package`, { headers: { 'If-None-Match': entry.etag } })).status, 304)
+      }
+      assert.equal((await request('/v1/games/unknown/package')).status, 404)
+      assert.deepEqual(await (await request('/v1/games/unknown/package')).json(), { error: '没有这个示例游戏包。' })
+    })
+
     await t.test('authentication, CSRF header, password validation and duplicate accounts', async () => {
       assert.equal((await request('/v1/projects')).status, 401)
       assert.equal((await request('/v1/auth/register', { method: 'POST', headers: { 'X-TomCat-Request': '' }, body: {} })).status, 403)
@@ -147,6 +169,8 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
         ['ProjectSettings/PlayerSettings.json', Buffer.from('{"width":1234}')],
         ['Assets/WebImports/pixel.tga', Buffer.from([0, 0, 2, 255])],
         ['Assets/WebImports/pixel.tga.tcmeta', Buffer.from('Handle: 18446744073709551615')],
+        ['Assets/Scripts/WebSmoke.cs', Buffer.from('public sealed class WebSmoke : TomCatBehaviour { }')],
+        ['Assets/Scripts/WebSmoke.cs.tcmeta', Buffer.from('SchemaVersion: 2\nAsset:\n  Handle: 123\n  Type: CSharpScript\n')],
       ]) fileBytes.set(path, bytes)
       const files = []
       for (const [path, bytes] of fileBytes) {
@@ -178,6 +202,8 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
         { ...manifest, aiCheckpoint: { runId: 'a'.repeat(32), phase: 'other', sceneVersion: '1:0' } },
         { ...manifest, files: manifest.files.slice(1) },
         { ...manifest, files: manifest.files.filter(file => !file.path.endsWith('.tcmeta')) },
+        { ...manifest, files: manifest.files.filter(file => file.path !== 'Assets/Scripts/WebSmoke.cs.tcmeta') },
+        { ...manifest, files: manifest.files.filter(file => file.path !== 'Assets/Scripts/WebSmoke.cs') },
         { ...manifest, files: [...manifest.files, manifest.files[0]] },
         ...[
           { path: 'Assets/../Project.tcproj' },

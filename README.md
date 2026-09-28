@@ -83,7 +83,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 }
 ```
 
-上例只展示文件项格式；实际必须包含 `Project.tcproj`、`ProjectSettings/BuildSettings.json`、`ProjectSettings/ProjectSettings.json`、`ProjectSettings/PlayerSettings.json`，以及全部 Assets 源文件。每张图片必须附带同路径 `.tcmeta`，meta 也必须有源文件。清单最多 512 个文件、总量 36 MiB，活动场景归档上限 4 MiB；拒绝路径穿越及大小写重复路径。所有 uint64 Handle 保持字符串。
+上例只展示文件项格式；实际必须包含 `Project.tcproj`、`ProjectSettings/BuildSettings.json`、`ProjectSettings/ProjectSettings.json`、`ProjectSettings/PlayerSettings.json`，以及全部 Assets 源文件。每张图片（`.png/.jpg/.jpeg/.tga`）与每个 C# 脚本（`.cs`）必须附带同路径 `.tcmeta`，meta 也必须有源文件。清单最多 512 个文件、总量 36 MiB，活动场景归档上限 4 MiB；拒绝路径穿越及大小写重复路径。所有 uint64 Handle 保持字符串。
 
 修订事务持有写锁，校验 ETag、资源所属项目、实际哈希和长度，将修订、文件引用与项目指针一并提交。上传缺失、伪造或跨项目引用不会生成修订。文件为不可变 SQLite BLOB，历史修订始终引用原字节；新上传不会改变旧修订。每项目存储额度 256 MiB，每账号 1 GiB；后续上传时清理该项目超过 24 小时且无修订引用的孤立上传。已引用资源随历史版本保留，删除项目会级联删除全部资源。
 

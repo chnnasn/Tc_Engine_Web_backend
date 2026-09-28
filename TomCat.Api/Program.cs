@@ -43,6 +43,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 });
 builder.Services.AddAuthorization();
 builder.Services.AddSingleton<EditorSessions>();
+builder.Services.AddSingleton<GameCatalog>();
 builder.Services.AddHttpClient("agent", client => client.Timeout = TimeSpan.FromSeconds(200));
 builder.Services.AddProblemDetails();
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
@@ -87,6 +88,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 EditorSessions.Map(app);
+GamePackages.Map(app);
 
 app.MapPost("/v1/auth/register", async (Credentials input, Database db, IPasswordHasher<UserRow> hasher, HttpContext context) =>
 {
