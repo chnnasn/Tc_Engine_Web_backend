@@ -106,7 +106,13 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 打包过程：worker 把修订清单中的文件与上传字节物化到临时目录；由于 Web 编辑会话的场景只存在于归档字符串（MEMFS 磁盘上没有场景文件），worker 会写出 `Assets/Scene/WebScene.tomcat`、对应 `.tcmeta`，并把 `ProjectSettings/BuildSettings.json` 指向该场景（`entrySceneHandle` = 修订的 `sceneHandle`），与上游 `Samples/PhysicsPlayground` 的磁盘布局一致。随后运行 CLI（会先编译并校验 C# 源码，要求 `BuildSettings` 配置了入口场景），读取产出的游戏包，按内容 SHA-256 记录入库。游戏包上限 256 MiB，ETag 即 SHA-256，缓存策略与内置示例包一致（immutable + 304）。用户项目是喂给原生打包工具的不可信输入：物化在一次性临时目录中，路径经过 `SafePath` 白名单，资源字节在读取时重新校验归属与哈希，CLI 以独立进程运行并受超时约束。
 
-获取打包工具（见上游 `Tools/TomCatCLI/README.md`）：源码构建需要在 Visual Studio 开发者环境中执行 `vendor/premake/bin/premake5.exe --file=Tools/premake5.lua vs2022` 后 `msbuild Tools/Tools.sln -p:Configuration=Release -p:Platform=x64`，产物位于 `Tools/bin/Release-windows-x86_64/TomCatCLI/`；官方 Editor 发行版可直接用 `TomCat.exe --cli cook ...`。CLI 与网页引擎应来自 `engine.lock.json` 锁定的同一引擎提交；打包工具需要在部署平台（Railway 为 linux-x64）可用。
+获取打包工具（见上游 `Tools/TomCatCLI/README.md`）：
+
+- 官方 Editor 发行版没有独立的 CLI 下载：`TomCatCLI.exe` 与 Managed 工具链、Player Template 一起经 Enigma Virtual Box 打包进单个 `TomCat.exe`（上游 `Scripts/Package-Editor.ps1` + `editor.evb`，载荷正是先编译出的 `Tools/bin/Release-windows-x86_64/TomCatCLI/TomCatCLI.exe`）。调用方式为 `TomCat.exe --cli cook ...`：包装器（`TomCatInputApp.cpp`）校验内嵌清单，把匹配的运行时解压/复用到 `%LOCALAPPDATA%\TomCat\Editor\Runtime`，再以子进程运行真正的 CLI 并**透传退出码**。因此发布管线可直接使用该形态：`Cook__CliPath` 指向 `TomCat.exe`，`Cook__CliArgs=--cli cook --project "{project}" --output "{output}"`；失败诊断照常进入发布记录，worker 的超时整树终止对无超时的包装器同样有效。注意运行账户需要可写的用户配置目录（运行时解压位置）。
+- 源码构建可直接得到独立 CLI（不经过 EVB 打包）：VS 开发者环境中执行 `vendor/premake/bin/premake5.exe --file=Tools/premake5.lua vs2022` 后 `msbuild Tools/Tools.sln -p:Configuration=Release -p:Platform=x64`，产物 `Tools/bin/Release-windows-x86_64/TomCatCLI/TomCatCLI.exe` 直接作为 `Cook__CliPath`。`vendor/premake/bin` 不在仓库内时，按 `Scripts/ReleaseToolVersions.json` 锁定的版本（5.0.0-beta7，含 SHA-256）下载释放即可。CLI 必须与 Managed 工具链构建自相近的提交：托管 ABI（ManagedApiV1）随引擎演进，旧 CLI 配新工具链会在编译校验时报 `TCSP0014: ManagedApiV1 table 不兼容`——遇到该错误先重编 CLI。
+- 平台现实：EVB 打包的编辑器与 VS 构建的 CLI 都是 Windows 产物；linux-x64 部署（如 Railway）上的服务端打包需要另行解决——Windows 主机/容器承载 cook worker，或验证上游 premake 是否可产出 Linux 构建。上游未提供 Linux 预编译 CLI。
+
+CLI 与网页引擎应来自 `engine.lock.json` 锁定的同一引擎提交。
 
 ## 验收
 
