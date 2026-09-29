@@ -37,6 +37,8 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 访问 `http://127.0.0.1:8080/health` 应返回 `{"status":"ok"}`。容器会监听 `PORT`（默认 `8080`），并把 SQLite 数据库、WAL 和 Cookie 加密密钥统一写入 `/data`。
 
+镜像为多阶段构建：除 .NET 发布外，还会用 `emscripten/emsdk` 检出并构建上游引擎的 `tomcat_player`，并用 .NET SDK 构建 C# 脚本编译所需的托管工具链（见下「服务端打包」）。首次构建需要拉取 emsdk 镜像、克隆引擎并编译 C++ 归档，耗时和资源占用明显高于纯 .NET 构建；构建完成后运行时不包含 emsdk 与编译器，但**保留 .NET SDK**（带 C# 脚本的项目要在容器内运行 `dotnet build`）。不需要 C# 打包时，可把 `Dockerfile` 运行时阶段的基础镜像换回 `mcr.microsoft.com/dotnet/aspnet:10.0` 以显著减小体积。
+
 ## Railway 部署
 
 1. 在 Railway 新建服务并连接 `Tc_Engine_Web_backend` GitHub 仓库。根目录的 `Dockerfile` 会被自动识别，`railway.json` 会配置 `/health` 健康检查和失败重启。
@@ -44,6 +46,8 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 3. 在 Networking 中生成 Railway 域名。Railway 自动注入 `PORT`，无需手工填写端口或启动命令。
 4. 保持单副本运行。当前使用单文件 SQLite 和单个 Railway Volume，不支持多副本并发部署。
 5. 前端应通过同源 `/v1` 反向代理访问该服务。当前认证有意不开放跨域 Cookie；若前端与 API 使用不同来源，浏览器登录请求不会工作。
+
+打包器与 C# 编译链都已随镜像构建（`Cook__CliPath` / `Cook__CliArgs` 由 `Dockerfile` 的 `ENV` 预设），因此**不需要**再挂载 Windows 主机、另起 cook 服务或配置 GitHub Actions 去构建桌面 CLI。部署时请给构建步骤留出足够时间与内存：`player` 阶段会编译引擎 C++ 归档，属于重构建；如果 Railway 构建资源紧张，可先在 CI 里 `docker build` 并推送镜像，再让 Railway 拉取。运行时容器会在每次发布带 C# 的项目时执行一次 `dotnet build`（秒级），需要可写的 `/tmp`（`NUGET_PACKAGES` 指向 `/tmp/tomcat-nuget`），且会占用额外 CPU。
 
 首次部署完成后访问 `https://<你的域名>/health`。返回 HTTP 200 后，再备份 Volume，并在 Railway 中启用自动备份策略。
 
@@ -95,24 +99,46 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 作品发布与打包
 
-发布把项目最新一次云端保存的修订交给上游 `TomCatCLI cook` 打包为 TCPAK，产出对游客公开的游戏包。发布前会先把 Redis 待落库快照固化为正式修订（基线冲突返回 409）；同一项目同时只允许一个进行中的发布任务（409），失败会记录原因并可在排除问题后重新发布。取消发布或删除项目会立即移除公开入口（删除项目经外键级联）。CookWorker 为单实例设计：同一时刻只打包一个任务，进程重启后未完成任务自动重试。
+发布把项目最新一次云端保存的修订交给已配置的打包器打包为 TCPAK，产出对游客公开的游戏包。容器镜像内置引擎自带的 Emscripten 打包器（见下「服务端打包」），因此 linux-x64 部署不再依赖 Windows 桌面 CLI。发布前会先把 Redis 待落库快照固化为正式修订（基线冲突返回 409）；同一项目同时只允许一个进行中的发布任务（409），失败会记录原因并可在排除问题后重新发布。取消发布或删除项目会立即移除公开入口（删除项目经外键级联）。CookWorker 为单实例设计：同一时刻只打包一个任务，进程重启后未完成任务自动重试。
 
 配置：
 
-- `Cook__CliPath`：打包工具可执行文件路径。未配置或文件不存在时，发布接口返回 503。
-- `Cook__CliArgs`：参数模板（默认 `cook --project "{project}" --output "{output}"`），支持上游包装形式，例如 `--cli cook --project "{project}" --output "{output}"`。
+- `Cook__CliPath`：打包工具可执行文件路径。未配置或文件不存在时，发布接口返回 503。容器镜像默认 `/usr/local/bin/node`（镜像内已带 Node 与 Web Player 打包器）。
+- `Cook__CliArgs`：参数模板（默认 `cook --project "{project}" --output "{output}"`）。容器镜像默认 `/app/cook/worker.mjs "{project}" "{output}"`，即用 Node 驱动 Emscripten 打包器；也支持上游包装形式，例如 `--cli cook --project "{project}" --output "{output}"`。
 - `Cook__TimeoutSeconds`：单次打包超时（默认 900，下限 30）；超时 kills 整个进程树。
 - `Cook__PollSeconds`：后台任务轮询间隔（默认 3）。
 
-打包过程：worker 把修订清单中的文件与上传字节物化到临时目录；由于 Web 编辑会话的场景只存在于归档字符串（MEMFS 磁盘上没有场景文件），worker 会写出 `Assets/Scene/WebScene.tomcat`、对应 `.tcmeta`，并把 `ProjectSettings/BuildSettings.json` 指向该场景（`entrySceneHandle` = 修订的 `sceneHandle`），与上游 `Samples/PhysicsPlayground` 的磁盘布局一致。随后运行 CLI（会先编译并校验 C# 源码，要求 `BuildSettings` 配置了入口场景），读取产出的游戏包，按内容 SHA-256 记录入库。游戏包上限 256 MiB，ETag 即 SHA-256，缓存策略与内置示例包一致（immutable + 304）。用户项目是喂给原生打包工具的不可信输入：物化在一次性临时目录中，路径经过 `SafePath` 白名单，资源字节在读取时重新校验归属与哈希，CLI 以独立进程运行并受超时约束。
+打包过程：worker 把修订清单中的文件与上传字节物化到临时目录；由于 Web 编辑会话的场景只存在于归档字符串（MEMFS 磁盘上没有场景文件），worker 会写出 `Assets/Scene/WebScene.tomcat`、对应 `.tcmeta`，并把 `ProjectSettings/BuildSettings.json` 指向该场景（`entrySceneHandle` = 修订的 `sceneHandle`），与上游 `Samples/PhysicsPlayground` 的磁盘布局一致。随后运行打包器（项目带 C# 脚本时，容器会先用 `dotnet build` 编译并注入托管载荷，见下；桌面 CLI 也会先编译并校验 C# 源码。两者都要求 `BuildSettings` 配置了入口场景），读取产出的游戏包，按内容 SHA-256 记录入库。游戏包上限 256 MiB，ETag 即 SHA-256，缓存策略与内置示例包一致（immutable + 304）。用户项目是喂给打包器的不可信输入：物化在一次性临时目录中，路径经过 `SafePath` 白名单，资源字节在读取时重新校验归属与哈希，打包器以独立进程运行并受超时约束。
 
-获取打包工具（见上游 `Tools/TomCatCLI/README.md`）：
+服务端打包（容器内 Node + Emscripten 打包器）：
 
-- 官方 Editor 发行版没有独立的 CLI 下载：`TomCatCLI.exe` 与 Managed 工具链、Player Template 一起经 Enigma Virtual Box 打包进单个 `TomCat.exe`（上游 `Scripts/Package-Editor.ps1` + `editor.evb`，载荷正是先编译出的 `Tools/bin/Release-windows-x86_64/TomCatCLI/TomCatCLI.exe`）。调用方式为 `TomCat.exe --cli cook ...`：包装器（`TomCatInputApp.cpp`）校验内嵌清单，把匹配的运行时解压/复用到 `%LOCALAPPDATA%\TomCat\Editor\Runtime`，再以子进程运行真正的 CLI 并**透传退出码**。因此发布管线可直接使用该形态：`Cook__CliPath` 指向 `TomCat.exe`，`Cook__CliArgs=--cli cook --project "{project}" --output "{output}"`；失败诊断照常进入发布记录，worker 的超时整树终止对无超时的包装器同样有效。注意运行账户需要可写的用户配置目录（运行时解压位置）。
-- 源码构建可直接得到独立 CLI（不经过 EVB 打包）：VS 开发者环境中执行 `vendor/premake/bin/premake5.exe --file=Tools/premake5.lua vs2022` 后 `msbuild Tools/Tools.sln -p:Configuration=Release -p:Platform=x64`，产物 `Tools/bin/Release-windows-x86_64/TomCatCLI/TomCatCLI.exe` 直接作为 `Cook__CliPath`。`vendor/premake/bin` 不在仓库内时，按 `Scripts/ReleaseToolVersions.json` 锁定的版本（5.0.0-beta7，含 SHA-256）下载释放即可。CLI 必须与 Managed 工具链构建自相近的提交：托管 ABI（ManagedApiV1）随引擎演进，旧 CLI 配新工具链会在编译校验时报 `TCSP0014: ManagedApiV1 table 不兼容`——遇到该错误先重编 CLI。
-- 平台现实：EVB 打包的编辑器与 VS 构建的 CLI 都是 Windows 产物；linux-x64 部署（如 Railway）上的服务端打包需要另行解决——Windows 主机/容器承载 cook worker，或验证上游 premake 是否可产出 Linux 构建。上游未提供 Linux 预编译 CLI。
+上游 `54697ebf` 泛化了播放器的 cook 入口（`tc_web_player_cook(projectPath, outputPath)`，旧符号 `tc_web_player_cook_sample` 保留为委托 shim），于是「引擎自带的 TCPAK writer」可以在浏览器之外的 Node 里运行。本仓库据此把打包器搬进了 API 容器，linux-x64 部署不再需要 Windows 主机、额外的 cook 服务，也不需要预编译 CLI。
 
-CLI 与网页引擎应来自 `engine.lock.json` 锁定的同一引擎提交。
+- `Dockerfile` 的 `source` 阶段检出上游引擎（按顶部 `ARG ENGINE_COMMIT`，当前 `54697ebf723749783bea6df6e9f7f7afd3af6530`）并初始化 `Box2D/glm/spdlog/ImGuizmo` 子模块，供后续阶段共用。
+- `player` 阶段用 `emscripten/emsdk:4.0.15` 只构建 `tomcat_player` 目标（`emcmake` + CMake + Ninja）。该目标**不需要 .NET SDK，也不需要 wasm-tools 工作负载**。产物 `tomcat_player.js/.wasm/.data` 在运行时阶段落到 `/app/player`。
+- `managed` 阶段用 .NET SDK 构建 `TomCat.Managed.dll`（脚本 API 面）与 `TomCat.ScriptGenerator.dll`（Roslyn 源生成器），与打包器同一提交，落到运行时镜像的 `/app/managed`。
+- `cook/worker.mjs` 是容器内的打包入口：CookWorker 物化出的项目目录整棵镜像进模块 MEMFS（同一绝对路径，`Project::Load` 与 `CookToPackage` 都接受绝对路径），调用 `tc_web_player_cook(projectPath, outputPath)`，再把产物拷回宿主路径。失败时打印 `tc_web_player_error()` 并以 cook 返回码（1/2/3）退出，发布记录照常得到真实原因；基础设施错误（缺模块、缺参数、C# 编译失败）用退出码 4 区分。它接受位置参数，也能解析 `cook --project X --output Y` 形态。
+- 版本策略：容器内打包器固定 `54697ebf`（泛化 cook 入口从该提交起才有），浏览器播放器继续锁 `684eb8f3`。两者 `ManagedApiCurrent = 5` 一致、TCPAK 格式一致，所以新打包器产出的包（含 C# 载荷）可以被当前网页播放器直接加载，前端 `engine.lock.json` 不需要被迫升级。打包器提交同时写入环境变量 `TOMCAT_COOK_ENGINE_COMMIT` 便于核对，游玩页已有的版本警告横幅作为兜底；后续前端锁升级到 ≥ `54697ebf` 时自然对齐。
+- 更换打包器提交只需改 `Dockerfile` 顶部的 `ARG ENGINE_COMMIT`（或构建时传 `--build-arg ENGINE_COMMIT=<sha>`），`source`/`player`/`managed` 阶段会重新检出并构建。
+
+C# 项目打包（替代桌面 `CompileManaged`）：
+
+上游 `ScriptProjectCompiler` 的编译实现整段包在 `#ifdef TC_PLATFORM_WINDOWS` 里，非 Windows 直接返回「Script compilation is not implemented on this platform」。`cook/managed-payload.mjs` 在 Linux 上复刻同一套契约：
+
+1. 扫描 `Assets/` 下的全部 `.cs`，从同路径 `.tcmeta` 的 `Handle:` 取资产 Handle（uint64 十进制，绝不经 `Number`），生成源生成器读取的 `ScriptAssets.json`。
+2. 按桌面 `WriteGeneratedProject` 的形态生成 `Library/ScriptProject/Build/<id>/Assembly-CSharp.csproj`：`net10.0`、`AssemblyName=Assembly-CSharp`、`TomCat.Managed` 作为受信 `Reference`、`TomCat.ScriptGenerator` 作为 `Analyzer`、`ScriptAssets.json` 作为 `AdditionalFiles`，并保留上游那套禁用环境/目录导入与 NuGet 引用的加固属性。**不设置 `RuntimeIdentifier`**：载荷由引擎标记为 `portable`。
+3. 运行 `dotnet build`（全局属性锁与桌面 `RunRestrictedDotNetBuild` 一致，并清空包源以保证离线），产物在 `Library/ScriptAssemblies/Build/<id>/Assembly-CSharp.dll(.pdb)`。
+4. 按上游 `ExtractEmbeddedScriptManifest` 的算法，从 DLL 元数据 `#US` 堆里把 UTF-16LE 的脚本清单原样取出——引擎要求「注入的清单必须与程序集内嵌的清单完全相同」，所以清单不从零构造，而是逐字复用生成器的输出。
+5. 经 `tc_web_player_set_cook_payload(assembly, manifestJson, buildId, pdb)` 注入，再 cook。
+
+因此运行时镜像刻意使用 .NET SDK 基础镜像而非 aspnet 镜像：容器内需要 MSBuild 与 Roslyn。相关环境变量：`TOMCAT_MANAGED_DIR`（默认 `/app/managed`）、`TOMCAT_DOTNET`（默认 `dotnet`）。离线调试可用 `TOMCAT_COOK_ASSEMBLY` / `TOMCAT_COOK_MANIFEST` / `TOMCAT_COOK_BUILD_ID`（可选 `TOMCAT_COOK_PDB`）直接注入一份现成载荷，此时跳过容器内编译。项目若带 `TomCat.Dependencies.csproj`（项目内依赖工程），容器打包器会明确拒绝并给出诊断，请改用桌面 Editor 打包。
+
+本机 Windows 调试仍可使用桌面 CLI（已不是部署路径）：
+
+- 官方 Editor 发行版没有独立的 CLI 下载：`TomCatCLI.exe` 与 Managed 工具链、Player Template 一起经 Enigma Virtual Box 打包进单个 `TomCat.exe`（上游 `Scripts/Package-Editor.ps1` + `editor.evb`）。调用方式为 `TomCat.exe --cli cook ...`：包装器（`TomCatInputApp.cpp`）校验内嵌清单，把匹配的运行时解压/复用到 `%LOCALAPPDATA%\TomCat\Editor\Runtime`，再以子进程运行真正的 CLI 并**透传退出码**。因此 `Cook__CliPath` 可指向 `TomCat.exe`、`Cook__CliArgs=--cli cook --project "{project}" --output "{output}"`；失败诊断照常进入发布记录，worker 的超时整树终止对无超时的包装器同样有效。注意运行账户需要可写的用户配置目录（运行时解压位置）。
+- 源码构建可直接得到独立 CLI（不经过 EVB 打包）：VS 开发者环境中执行 `vendor/premake/bin/premake5.exe --file=Tools/premake5.lua vs2022` 后 `msbuild Tools/Tools.sln -p:Configuration=Release -p:Platform=x64`，产物 `Tools/bin/Release-windows-x86_64/TomCatCLI/TomCatCLI.exe` 直接作为 `Cook__CliPath`。`vendor/premake/bin` 不在仓库内时，按 `Scripts/ReleaseToolVersions.json` 锁定的版本（5.0.0-beta7，含 SHA-256）下载释放即可。CLI 必须与 Managed 工具链构建自相近的提交：托管 ABI（ManagedApiV1）随引擎演进，旧 CLI 配新工具链会在编译校验时报 `TCSP0014: ManagedApiV1 table 不兼容`——遇到该错误先重编 CLI。本机重编时可顺带带上 `54697ebf` 之后的两个 scripting 修复。
+
+CLI 与网页引擎应来自兼容的引擎提交：桌面 CLI 与 `engine.lock.json` 保持一致；容器内打包器用 `Dockerfile` 固定的提交，与 `engine.lock.json` 的 Managed API 版本必须相同。
 
 ## 验收
 
@@ -120,9 +146,13 @@ CLI 与网页引擎应来自 `engine.lock.json` 锁定的同一引擎提交。
 dotnet build TomCat.Api -c Release --no-restore
 node --test tests/api.test.mjs
 node --test tests/publish.test.mjs
+node --test tests/cook-worker.test.mjs
+node --test tests/cook-managed-payload.test.mjs
 ```
 
 脚本启动真实 Kestrel 和临时 SQLite 数据库，验证旧数据库迁移、注册登录、上传及去重、哈希和大小限制、项目归属、修订引用完整性、ETag 竞争、历史字节不可变、重启持久化与级联删除。`tests/publish.test.mjs` 以确定性假 CLI 走通完整发布链路：保存修订 → 发布 → 物化与打包 → 公开列表/详情/游戏包/304 → 失败报告与重试 → 取消发布与级联删除，并验证未配置 `Cook__CliPath` 时返回 503。只创建测试账户和临时数据，不使用开发数据库。测试退出后关闭子进程并清理它创建的临时目录。
+
+`tests/cook-worker.test.mjs` 覆盖容器内打包 worker 的契约：位置参数与 `cook --project X --output Y` 两种形态的解析、缺少参数/缺少项目文件/缺少 Web Player 模块时非零退出并给出可读诊断。`tests/cook-managed-payload.test.mjs` 覆盖 C# 载荷构建的纯逻辑：`.tcmeta` Handle 解析、`ScriptAssets.json` 保留 uint64 精度、`Assets` 脚本枚举与排序、从程序集 UTF-16LE 字节中逐字取出内嵌脚本清单、生成的 `Assembly-CSharp.csproj` 关键契约，以及缺工具链/无脚本时的行为。两者都不需要 Emscripten 产物或 .NET SDK，可在纯 Node 环境运行；容器内的真实 `dotnet build` 与 cook 闭环需要在装有 `/app/player`、`/app/managed` 的镜像里验证。
 
 ## Redis 自动同步与定期落库
 
