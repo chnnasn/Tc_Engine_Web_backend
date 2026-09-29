@@ -280,7 +280,8 @@ export function buildManagedPayload(options) {
   }
 
   // BuildID 只需满足引擎的 IsSafeBuildID（字母数字/-/_/. ，≤128），用源码哈希前 32 位即可。
-  const buildId = sourceHash(scripts).slice(0, 32)
+  const sourceHashHex = sourceHash(scripts)
+  const buildId = sourceHashHex.slice(0, 32)
   const scriptProjectDirectory = join(projectRoot, 'Library', 'ScriptProject', 'Build', buildId)
   const assembliesDirectory = join(projectRoot, 'Library', 'ScriptAssemblies')
   const buildDirectory = join(assembliesDirectory, 'Build', buildId)
@@ -311,12 +312,27 @@ export function buildManagedPayload(options) {
     throw new Error('Assembly-CSharp.dll 中没有源生成器写出的脚本清单（ScriptManifest.Json）。')
   }
   const pdbPath = join(buildDirectory, 'Assembly-CSharp.pdb')
+  const hasPdb = existsSync(pdbPath)
+  // 引擎 cook 的发现路径（AssetManager::LoadProjectManagedPayload）从
+  // Library/ScriptAssemblies/last-good.json 读取上次成功构建：worker 无法用
+  // tc_web_player_set_cook_payload 预注入（tc_web_player_cook 内部的
+  // SetProject→Initialize→Shutdown 会清掉覆写），因此必须按桌面布局落盘。
+  writeFileSync(join(assembliesDirectory, 'last-good.json'), JSON.stringify({
+    version: 1,
+    sourceHash: sourceHashHex.slice(0, 16),
+    buildId,
+    assembly: `Build/${buildId}/Assembly-CSharp.dll`,
+    ...(hasPdb ? { pdb: `Build/${buildId}/Assembly-CSharp.pdb` } : {}),
+  }))
+  // 发现路径还会校验 Library/ScriptProject/ScriptAssets.json 的 Handle 映射。
+  mkdirSync(join(projectRoot, 'Library', 'ScriptProject'), { recursive: true })
+  writeFileSync(join(projectRoot, 'Library', 'ScriptProject', 'ScriptAssets.json'), scriptAssetsJson(scripts))
   return {
     buildId,
     manifestJson,
     assemblyPath,
     assemblyBytes: assembly,
-    pdbBytes: existsSync(pdbPath) ? new Uint8Array(readFileSync(pdbPath)) : new Uint8Array(0),
+    pdbBytes: hasPdb ? new Uint8Array(readFileSync(pdbPath)) : new Uint8Array(0),
     scriptCount: scripts.length,
     assemblySize: statSync(assemblyPath).size,
   }

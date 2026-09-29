@@ -11,8 +11,12 @@
 // 诊断来自 tc_web_player_error()；进程退出码即打包结果，让发布记录如实反映失败。
 //
 // 项目带 C# 脚本时，先在本容器里用 dotnet build + 源生成器编译出 Assembly-CSharp.dll，
-// 取出程序集内嵌的脚本清单，经 tc_web_player_set_cook_payload 注入后再 cook。这条链路
-// 替代了桌面的 CompileManaged（上游那份实现只在 Windows 下可用）。细节见 managed-payload.mjs。
+// 然后按桌面布局写 Library/ScriptAssemblies/last-good.json 与 ScriptAssets.json，
+// 由 cook 的发现路径（AssetManager::LoadProjectManagedPayload）读取。之所以不走
+// tc_web_player_set_cook_payload 预注入：tc_web_player_cook 内部的
+// SetProject→Initialize→Shutdown 会清掉 AssetManager 的载荷覆写（上游 54697ebf 的
+// 顺序问题，已在本机正向用例中实测复现），发现路径则是桌面 CLI 同款的官方通道。
+// 细节见 managed-payload.mjs。
 
 import { createRequire } from 'node:module'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
@@ -67,7 +71,8 @@ function ensureDirectory(FS, path) {
   }
 }
 
-// 项目根下的构建产物/缓存不属于资产，镜像进 MEMFS 只会白占内存（C# 编译产物就在 Library 下）。
+// 项目根下的构建产物/缓存不属于资产，镜像进 MEMFS 只会白占内存
+// （Library 的载荷子树由 stageManagedLibrary 单独按需镜像）。
 const STAGE_SKIP = new Set(['Library', 'Build', 'Builds', 'bin', 'obj'])
 
 // 把宿主目录整棵镜像到 MEMFS 的同一绝对路径下：Project::Load 与 CookToPackage 都接受绝对路径，
@@ -91,61 +96,21 @@ function playerError(module) {
   } catch { return '（无法读取引擎诊断信息）' }
 }
 
-// 解析要注入的托管载荷：
-//   - 显式配置（TOMCAT_COOK_ASSEMBLY / _MANIFEST / _BUILD_ID / 可选 _PDB）优先，便于离线调试；
-//   - 否则项目里有 C# 脚本时在容器内编译（dotnet build + 源生成器）；
-//   - 项目没有 C# 脚本时返回 null，表示不需要注入。
-// 返回 undefined 表示失败（调用方据此非零退出）。
+// 解析 C# 载荷的落盘布局。返回 undefined 表示失败（调用方据此非零退出）；
+// 返回 null 表示项目没有 C# 脚本，无需任何载荷。
 function resolveManagedPayload(projectRoot, log, complain) {
-  const assemblyPath = process.env.TOMCAT_COOK_ASSEMBLY
-  if (assemblyPath) {
-    const manifestPath = process.env.TOMCAT_COOK_MANIFEST
-    const buildId = process.env.TOMCAT_COOK_BUILD_ID
-    if (!manifestPath || !buildId) {
-      complain('显式托管载荷需要同时设置 TOMCAT_COOK_MANIFEST 与 TOMCAT_COOK_BUILD_ID。')
-      return undefined
-    }
-    if (!existsSync(assemblyPath) || !existsSync(manifestPath)) {
-      complain(`托管载荷文件缺失：${assemblyPath} / ${manifestPath}`)
-      return undefined
-    }
-    const pdbPath = process.env.TOMCAT_COOK_PDB
-    return {
-      buildId,
-      assemblyBytes: new Uint8Array(readFileSync(assemblyPath)),
-      manifestJson: readFileSync(manifestPath, 'utf8'),
-      pdbBytes: pdbPath && existsSync(pdbPath) ? new Uint8Array(readFileSync(pdbPath)) : new Uint8Array(0),
-    }
-  }
-  try {
-    return buildManagedPayload({ projectRoot, managedDirectory: MANAGED_DIRECTORY, dotnet: DOTNET, log })
-  } catch (error) {
-    complain(`C# 脚本编译失败：${error?.message || error}`)
-    return undefined
-  }
+  return buildManagedPayload({ projectRoot, managedDirectory: MANAGED_DIRECTORY, dotnet: DOTNET, log, complain })
 }
 
-// 经公开覆写注入已校验的托管载荷，随后的 cook 会优先使用它。
-function injectManagedPayload(module, payload, complain) {
-  const assembly = payload.assemblyBytes
-  const pdb = payload.pdbBytes
-  const assemblyPointer = module._malloc(assembly.length)
-  const pdbPointer = pdb && pdb.length ? module._malloc(pdb.length) : 0
-  try {
-    module.HEAPU8.set(assembly, assemblyPointer)
-    if (pdbPointer) module.HEAPU8.set(pdb, pdbPointer)
-    const code = module.ccall('tc_web_player_set_cook_payload', 'number',
-      ['number', 'number', 'string', 'string', 'number', 'number'],
-      [assemblyPointer, assembly.length, payload.manifestJson, payload.buildId, pdbPointer, pdb ? pdb.length : 0])
-    if (code !== 0) {
-      complain(`托管载荷被拒绝（返回 ${code}）：${playerError(module)}`)
-      return false
-    }
-    log(`已注入托管载荷 build ${payload.buildId}（程序集 ${assembly.length} 字节，清单 ${payload.manifestJson.length} 字节）`)
-    return true
-  } finally {
-    module._free(assemblyPointer)
-    if (pdbPointer) module._free(pdbPointer)
+// cook 的发现路径只从 MEMFS 的 Library 读取载荷（LoadProjectManagedPayload），
+// 因此构建产物所在的 Library 子树必须单独镜像（基础镜像跳过整个 Library）。
+function stageManagedLibrary(FS, root) {
+  const posixRoot = toPosix(root)
+  stage(FS, join(root, 'Library', 'ScriptAssemblies'), `${posixRoot}/Library/ScriptAssemblies`, false)
+  const scriptAssets = join(root, 'Library', 'ScriptProject', 'ScriptAssets.json')
+  if (existsSync(scriptAssets)) {
+    ensureDirectory(FS, `${posixRoot}/Library/ScriptProject`)
+    FS.writeFile(`${posixRoot}/Library/ScriptProject/ScriptAssets.json`, new Uint8Array(readFileSync(scriptAssets)))
   }
 }
 
@@ -184,8 +149,8 @@ async function run() {
   try {
     const payload = resolveManagedPayload(root, log, complain)
     if (payload === undefined) return EXIT_INFRASTRUCTURE
-    if (payload && !injectManagedPayload(module, payload, complain)) return EXIT_INFRASTRUCTURE
     stage(module.FS, root, toPosix(root))
+    if (payload) stageManagedLibrary(module.FS, root)
     ensureDirectory(module.FS, dirname(memoryOutput))
     const code = module.ccall('tc_web_player_cook', 'number', ['string', 'string'], [memoryProject, memoryOutput])
     if (code !== 0) {

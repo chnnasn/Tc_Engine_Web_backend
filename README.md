@@ -108,7 +108,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 - `Cook__TimeoutSeconds`：单次打包超时（默认 900，下限 30）；超时 kills 整个进程树。
 - `Cook__PollSeconds`：后台任务轮询间隔（默认 3）。
 
-打包过程：worker 把修订清单中的文件与上传字节物化到临时目录；由于 Web 编辑会话的场景只存在于归档字符串（MEMFS 磁盘上没有场景文件），worker 会写出 `Assets/Scene/WebScene.tomcat`、对应 `.tcmeta`，并把 `ProjectSettings/BuildSettings.json` 指向该场景（`entrySceneHandle` = 修订的 `sceneHandle`），与上游 `Samples/PhysicsPlayground` 的磁盘布局一致。随后运行打包器（项目带 C# 脚本时，容器会先用 `dotnet build` 编译并注入托管载荷，见下；桌面 CLI 也会先编译并校验 C# 源码。两者都要求 `BuildSettings` 配置了入口场景），读取产出的游戏包，按内容 SHA-256 记录入库。游戏包上限 256 MiB，ETag 即 SHA-256，缓存策略与内置示例包一致（immutable + 304）。用户项目是喂给打包器的不可信输入：物化在一次性临时目录中，路径经过 `SafePath` 白名单，资源字节在读取时重新校验归属与哈希，打包器以独立进程运行并受超时约束。
+打包过程：worker 把修订清单中的文件与上传字节物化到临时目录；由于 Web 编辑会话的场景只存在于归档字符串（MEMFS 磁盘上没有场景文件），worker 会写出 `Assets/Scene/WebScene.tomcat`、对应 `.tcmeta`，并把 `ProjectSettings/BuildSettings.json` 指向该场景（`entrySceneHandle` = 修订的 `sceneHandle`），与上游 `Samples/PhysicsPlayground` 的磁盘布局一致。随后运行打包器（项目带 C# 脚本时，容器会先用 `dotnet build` 编译并按发现路径布局落盘，见下；桌面 CLI 也会先编译并校验 C# 源码。两者都要求 `BuildSettings` 配置了入口场景），读取产出的游戏包，按内容 SHA-256 记录入库。游戏包上限 256 MiB，ETag 即 SHA-256，缓存策略与内置示例包一致（immutable + 304）。用户项目是喂给打包器的不可信输入：物化在一次性临时目录中，路径经过 `SafePath` 白名单，资源字节在读取时重新校验归属与哈希，打包器以独立进程运行并受超时约束。
 
 服务端打包（容器内 Node + Emscripten 打包器）：
 
@@ -129,7 +129,7 @@ C# 项目打包（替代桌面 `CompileManaged`）：
 2. 按桌面 `WriteGeneratedProject` 的形态生成 `Library/ScriptProject/Build/<id>/Assembly-CSharp.csproj`：`net10.0`、`AssemblyName=Assembly-CSharp`、`TomCat.Managed` 作为受信 `Reference`、`TomCat.ScriptGenerator` 作为 `Analyzer`、`ScriptAssets.json` 作为 `AdditionalFiles`，并保留上游那套禁用环境/目录导入与 NuGet 引用的加固属性。**不设置 `RuntimeIdentifier`**：载荷由引擎标记为 `portable`。
 3. 运行 `dotnet build`（全局属性锁与桌面 `RunRestrictedDotNetBuild` 一致，并清空包源以保证离线），产物在 `Library/ScriptAssemblies/Build/<id>/Assembly-CSharp.dll(.pdb)`。
 4. 按上游 `ExtractEmbeddedScriptManifest` 的算法，从 DLL 元数据 `#US` 堆里把 UTF-16LE 的脚本清单原样取出——引擎要求「注入的清单必须与程序集内嵌的清单完全相同」，所以清单不从零构造，而是逐字复用生成器的输出。
-5. 经 `tc_web_player_set_cook_payload(assembly, manifestJson, buildId, pdb)` 注入，再 cook。
+5. 按 `AssetManager::LoadProjectManagedPayload` 的磁盘契约落盘：`Library/ScriptAssemblies/last-good.json`（`{version:1, sourceHash: 16 位 hex, buildId, assembly: "Build/<id>/Assembly-CSharp.dll", pdb?}`）与 `Library/ScriptProject/ScriptAssets.json`，worker 把这两处镜像进 MEMFS，cook 的发现路径自行读取。**不**走 `tc_web_player_set_cook_payload` 预注入——`tc_web_player_cook` 内部的 `SetProject`→`Initialize`→`Shutdown` 会清掉载荷覆写（上游 54697ebf 的顺序问题，正向用例实测复现）；发现路径是桌面 CLI 同款的官方通道，零上游改动。
 
 因此运行时镜像刻意使用 .NET SDK 基础镜像而非 aspnet 镜像：容器内需要 MSBuild 与 Roslyn。相关环境变量：`TOMCAT_MANAGED_DIR`（默认 `/app/managed`）、`TOMCAT_DOTNET`（默认 `dotnet`）。离线调试可用 `TOMCAT_COOK_ASSEMBLY` / `TOMCAT_COOK_MANIFEST` / `TOMCAT_COOK_BUILD_ID`（可选 `TOMCAT_COOK_PDB`）直接注入一份现成载荷，此时跳过容器内编译。项目若带 `TomCat.Dependencies.csproj`（项目内依赖工程），容器打包器会明确拒绝并给出诊断，请改用桌面 Editor 打包。
 
