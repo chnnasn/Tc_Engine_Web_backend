@@ -59,7 +59,7 @@ test('Redis working snapshots and SQLite checkpoints', { timeout: 90000, skip: !
     project = await (await request('/projects', { method: 'POST', body: { name: 'Realtime', template: '2D' } })).json()
     const bytes = Buffer.from('{}'), hash = createHash('sha256').update(bytes).digest('hex')
     const upload = await (await request(`/projects/${project.id}/uploads/${hash}`, { method: 'PUT', bytes })).json()
-    manifest = { schemaVersion: 2, engineCommit: 'e9c2a42818504f4f5496b74b30286b85ccae57de', sceneHandle: '123', archive: 'first', files: ['Project.tcproj', 'ProjectSettings/BuildSettings.json', 'ProjectSettings/ProjectSettings.json', 'ProjectSettings/PlayerSettings.json'].map(path => ({ path, ...upload })) }
+    manifest = { schemaVersion: 2, engineCommit: 'b6e9478a89ff0b45546cb6c8bafb7e2ebd34588a', sceneHandle: '123', archive: 'first', files: ['Project.tcproj', 'ProjectSettings/BuildSettings.json', 'ProjectSettings/ProjectSettings.json', 'ProjectSettings/PlayerSettings.json'].map(path => ({ path, ...upload })) }
 
     await t.test('working state is recoverable before any database revision exists', async () => {
       assert.equal((await (await request('/projects/sync-config')).json()).enabled, true)

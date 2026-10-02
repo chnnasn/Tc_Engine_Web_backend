@@ -26,7 +26,7 @@ public static class ProjectFiles
         files = [];
         if (payload.TryGetProperty("aiCheckpoint", out _) && AiCheckpoint.Read(payload) is null) return false;
         if (!payload.TryGetProperty("engineCommit", out var commit) || commit.ValueKind != JsonValueKind.String ||
-            commit.GetString() != "e9c2a42818504f4f5496b74b30286b85ccae57de" ||
+            commit.GetString() != "b6e9478a89ff0b45546cb6c8bafb7e2ebd34588a" ||
             !payload.TryGetProperty("sceneHandle", out var scene) || scene.ValueKind != JsonValueKind.String ||
             !Regex.IsMatch(scene.GetString()!, "^[1-9][0-9]*$") || !ulong.TryParse(scene.GetString(), out _) ||
             !payload.TryGetProperty("archive", out var archive) || archive.ValueKind != JsonValueKind.String ||

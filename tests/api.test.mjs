@@ -192,7 +192,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.from('mismatch') })).status, 400)
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.alloc(8 * 1024 * 1024 + 1) })).status, 413)
       assert.equal((await (await request(`/v1/projects/${project.id}`)).json()).etag, current.etag)
-      manifest = { schemaVersion: 2, engineCommit: 'e9c2a42818504f4f5496b74b30286b85ccae57de', sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
+      manifest = { schemaVersion: 2, engineCommit: 'b6e9478a89ff0b45546cb6c8bafb7e2ebd34588a', sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
     })
 
     await t.test('incomplete, forged and cross-project manifests cannot advance the project', async () => {
@@ -200,6 +200,8 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       const bytes = fileBytes.get('Project.tcproj')
       const foreign = await (await request(`/v1/projects/${other.id}/uploads/${hash(bytes)}`, { method: 'PUT', bytes })).json()
       const variants = [
+        { ...manifest, engineCommit: 'e9c2a42818504f4f5496b74b30286b85ccae57de' },
+        { ...manifest, engineCommit: '52f07c2df86ec3c095ad0fad8e6b46030c3830c9' },
         { ...manifest, aiCheckpoint: { runId: '../wrong', phase: 'start', sceneVersion: '1:0' } },
         { ...manifest, aiCheckpoint: { runId: 'a'.repeat(32), phase: 'other', sceneVersion: '1:0' } },
         { ...manifest, files: manifest.files.slice(1) },

@@ -99,7 +99,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 作品发布与打包
 
-Docker 打包器与前端现统一固定为 `e9c2a42818504f4f5496b74b30286b85ccae57de`，输出 TCPAK v8。上线时先部署对应的 Netlify 前端产物，再部署 Railway 后端；旧版前端无法读取 v8。Linux 容器仍使用 Node 驱动 Emscripten Web Player，不运行 Windows CLI 或原生 DLL 模块。
+Docker 打包器与前端现统一固定为 `b6e9478a89ff0b45546cb6c8bafb7e2ebd34588a`，输出 TCPAK v8。上线时先部署对应的 Netlify 前端产物，再部署 Railway 后端；旧版前端无法读取 v8。Linux 容器仍使用 Node 驱动 Emscripten Web Player，不运行 Windows CLI 或原生 DLL 模块。
 
 发布把项目最新一次云端保存的修订交给已配置的打包器打包为 TCPAK，产出对游客公开的游戏包。容器镜像内置引擎自带的 Emscripten 打包器（见下「服务端打包」），因此 linux-x64 部署不再依赖 Windows 桌面 CLI。发布前会先把 Redis 待落库快照固化为正式修订（基线冲突返回 409）；同一项目同时只允许一个进行中的发布任务（409），失败会记录原因并可在排除问题后重新发布。取消发布或删除项目会立即移除公开入口（删除项目经外键级联）。CookWorker 为单实例设计：同一时刻只打包一个任务，进程重启后未完成任务自动重试。
 
