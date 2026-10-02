@@ -1,7 +1,7 @@
 # 服务端打包器与后端共用上游 TomCat_Engine，提交在此固定；浏览器播放器锁在
-# engine.lock.json（684eb8f3），两者 Managed API v5 与 TCPAK 格式一致，可互相加载。
+# engine.lock.json（e9c2a428），两者 Managed API v5 与 TCPAK 格式一致，可互相加载。
 ARG ENGINE_REPOSITORY=https://github.com/chnnasn/TomCat_Engine.git
-ARG ENGINE_COMMIT=54697ebf723749783bea6df6e9f7f7afd3af6530
+ARG ENGINE_COMMIT=e9c2a42818504f4f5496b74b30286b85ccae57de
 
 # ---------------------------------------------------------------------------
 # 0. 引擎源码：检出并初始化构建 Web Player 所需的最小子模块，供后续阶段共用。
@@ -112,6 +112,7 @@ COPY --from=build /app/publish .
 COPY --from=player /engine/build/web/tomcat_player.js   /app/player/tomcat_player.js
 COPY --from=player /engine/build/web/tomcat_player.wasm /app/player/tomcat_player.wasm
 COPY --from=player /engine/build/web/tomcat_player.data /app/player/tomcat_player.data
+COPY --from=source /engine/Editor/TomCatInut/Packages/fonts/ /app/player/Packages/fonts/
 RUN printf '{"type":"commonjs"}\n' > /app/player/package.json
 
 # C# 脚本编译所需的托管程序集（与打包器同一提交）。

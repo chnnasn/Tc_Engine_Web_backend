@@ -101,7 +101,7 @@ async function createSavedProject(request, name, user = 'alice') {
   }
   const payload = {
     schemaVersion: 2,
-    engineCommit: 'a'.repeat(40),
+    engineCommit: 'e9c2a42818504f4f5496b74b30286b85ccae57de',
     sceneHandle: '12007672766582721512',
     archive: 'SchemaVersion: 11\nSceneName: web\nEntities: []\n',
     files: manifest,
@@ -172,7 +172,7 @@ test('publish chain: save, publish, cook, play publicly', { timeout: 120000 }, a
 
     const detail = await fetch(`${api.baseUrl}/v1/games/published/${projectId}`)
     assert.equal(detail.status, 200)
-    assert.equal((await json(detail)).engineCommit, 'a'.repeat(40))
+    assert.equal((await json(detail)).engineCommit, 'e9c2a42818504f4f5496b74b30286b85ccae57de')
     assert.equal((await fetch(`${api.baseUrl}/v1/games/published/missing-project`)).status, 404)
 
     const pack = await fetch(`${api.baseUrl}/v1/games/published/${projectId}/package`)

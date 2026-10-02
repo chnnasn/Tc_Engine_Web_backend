@@ -192,7 +192,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.from('mismatch') })).status, 400)
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.alloc(8 * 1024 * 1024 + 1) })).status, 413)
       assert.equal((await (await request(`/v1/projects/${project.id}`)).json()).etag, current.etag)
-      manifest = { schemaVersion: 2, engineCommit: '0a731be0d56352d5ae5785ffaece3edd834238ab', sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
+      manifest = { schemaVersion: 2, engineCommit: 'e9c2a42818504f4f5496b74b30286b85ccae57de', sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
     })
 
     await t.test('incomplete, forged and cross-project manifests cannot advance the project', async () => {

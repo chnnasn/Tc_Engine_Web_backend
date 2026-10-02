@@ -147,6 +147,10 @@ async function run() {
   }
 
   try {
+    // The standalone Web Player preloads sprites only; text scenes also need
+    // the engine fonts when Cook builds their font artifacts.
+    const fonts = join(PLAYER_DIRECTORY, 'Packages', 'fonts')
+    if (existsSync(fonts)) stage(module.FS, fonts, '/Packages/fonts', false)
     const payload = resolveManagedPayload(root, log, complain)
     if (payload === undefined) return EXIT_INFRASTRUCTURE
     stage(module.FS, root, toPosix(root))
