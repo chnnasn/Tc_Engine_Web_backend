@@ -30,10 +30,12 @@ RUN apt-get update \
 
 COPY --from=source /engine /engine
 
-# 固定的上游提交有两处头文件大小写错误；Linux 构建按实际 TimeStep.h 修正。
-RUN sed -i 's|TomCat/Core/Timestep.h|TomCat/Core/TimeStep.h|g' \
-    /engine/TomCat/src/TomCat/Scene/Scene.h \
-    /engine/TomCat/src/TomCat/Renderer/EditorCamera.h
+# 固定的上游提交按 Windows 路径大小写引用头文件，Linux 需使用实际名称。
+RUN find /engine/TomCat/src -type f \( -name '*.h' -o -name '*.cpp' \) \
+    -exec sed -i \
+      -e 's|TomCat/Core/Timestep.h|TomCat/Core/TimeStep.h|g' \
+      -e 's|"Platform/|"platform/|g' \
+      -e 's|<glfw/glfw3.h>|<GLFW/glfw3.h>|g' {} +
 
 # emcmake 会重置子进程 PATH，显式传入 Ninja 路径，避免依赖 PATH 查找。
 SHELL ["/bin/bash", "-c"]
