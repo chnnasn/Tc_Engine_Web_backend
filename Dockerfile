@@ -30,6 +30,11 @@ RUN apt-get update \
 
 COPY --from=source /engine /engine
 
+# 固定的上游提交有两处头文件大小写错误；Linux 构建按实际 TimeStep.h 修正。
+RUN sed -i 's|TomCat/Core/Timestep.h|TomCat/Core/TimeStep.h|g' \
+    /engine/TomCat/src/TomCat/Scene/Scene.h \
+    /engine/TomCat/src/TomCat/Renderer/EditorCamera.h
+
 # emcmake 会重置子进程 PATH，显式传入 Ninja 路径，避免依赖 PATH 查找。
 SHELL ["/bin/bash", "-c"]
 WORKDIR /engine
