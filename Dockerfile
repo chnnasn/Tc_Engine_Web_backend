@@ -37,6 +37,9 @@ RUN find /engine/TomCat/src -type f \( -name '*.h' -o -name '*.cpp' \) \
       -e 's|"Platform/|"platform/|g' \
       -e 's|<glfw/glfw3.h>|<GLFW/glfw3.h>|g' {} +
 
+# 此目标未启用 pthread；Emscripten 不允许导出不存在的 PThread 运行时。
+RUN sed -i "s/,'PThread'//g" /engine/Web/CMakeLists.txt
+
 # emcmake 会重置子进程 PATH，显式传入 Ninja 路径，避免依赖 PATH 查找。
 SHELL ["/bin/bash", "-c"]
 WORKDIR /engine
