@@ -25,8 +25,8 @@ public sealed class GameCatalog
             var header = new byte[12];
             if (stream.Read(header, 0, header.Length) != header.Length ||
                 Encoding.ASCII.GetString(header, 0, 8) != "TCPACK01" ||
-                BitConverter.ToUInt32(header, 8) != 7)
-                throw new InvalidOperationException($"示例包不是 tcpak v7：{file}");
+                BitConverter.ToUInt32(header, 8) != 8)
+                throw new InvalidOperationException($"示例包不是 tcpak v8：{file}");
             stream.Position = 0;
             packages[id] = new GamePackage(id, file, stream.Length, Convert.ToHexStringLower(SHA256.HashData(stream)));
         }
@@ -52,7 +52,7 @@ public static class GamePackages
             var etag = $"\"{package.Sha256}\"";
             context.Response.Headers.ETag = etag;
             // 包内容不可变，覆盖全局的 no-store。
-            context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+            context.Response.Headers.CacheControl = "public, max-age=0, must-revalidate";
             context.Response.Headers.XContentTypeOptions = "nosniff";
             if (context.Request.Headers.IfNoneMatch.ToString() == etag) return Results.StatusCode(304);
             return Results.File(package.Path, "application/octet-stream", enableRangeProcessing: true);

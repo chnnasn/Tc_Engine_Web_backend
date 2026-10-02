@@ -87,7 +87,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       db.close()
     })
 
-    await t.test('sample game packages are public, immutable and content-addressed', async () => {
+    await t.test('sample game packages are public, current and revalidated by content hash', async () => {
       // 游客未登录也应能列出并下载示例包（作品详情页对未登录用户开放）。
       const catalog = await (await request('/v1/games', { user: 'anonymous' })).json()
       assert.deepEqual(catalog.map(entry => entry.id), ['desert', 'forest', 'puzzle'])
@@ -96,12 +96,12 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
         assert.equal(response.status, 200)
         assert.equal(response.headers.get('content-type'), 'application/octet-stream')
         assert.equal(response.headers.get('etag'), entry.etag)
-        assert.match(response.headers.get('cache-control'), /immutable/)
+        assert.match(response.headers.get('cache-control'), /must-revalidate/)
         assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
         const bytes = Buffer.from(await response.arrayBuffer())
         assert.equal(bytes.length, entry.byteLength)
         assert.equal(bytes.subarray(0, 8).toString('ascii'), 'TCPACK01')
-        assert.equal(bytes.readUInt32LE(8), 7)
+        assert.equal(bytes.readUInt32LE(8), 8)
         assert.equal(`"${createHash('sha256').update(bytes).digest('hex')}"`, entry.etag)
         assert.equal((await request(`/v1/games/${entry.id}/package`, { headers: { 'If-None-Match': entry.etag } })).status, 304)
       }
