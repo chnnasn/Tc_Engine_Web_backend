@@ -76,7 +76,7 @@ builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
     options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
-        context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+        ProxyIdentity.Client(context, builder.Configuration["Proxy:Secret"]), _ => new FixedWindowRateLimiterOptions
         { PermitLimit = 20, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
 
@@ -86,6 +86,12 @@ app.UseForwardedHeaders();
 app.UseExceptionHandler();
 app.Use(async (context, next) =>
 {
+    if (context.Request.Path.StartsWithSegments("/v1/auth") && builder.Configuration["Proxy:Secret"] is { Length: > 0 } proxySecret && ProxyIdentity.TrustedClient(context, proxySecret) is null)
+    {
+        context.Response.StatusCode = 403;
+        await context.Response.WriteAsJsonAsync(new { error = "请通过网站访问认证服务。" });
+        return;
+    }
     // A custom header + no cross-origin CORS prevents cookie-authenticated cross-site writes.
     if (context.Request.Path.StartsWithSegments("/v1") &&
         !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method) &&

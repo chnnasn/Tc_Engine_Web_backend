@@ -24,7 +24,7 @@ dotnet run --project TomCat.Api --no-launch-profile -- --urls http://127.0.0.1:5
 
 默认数据库为 `TomCat.Api/App_Data/tomcat.db`。通过环境变量 `Storage__Directory` 指定持久化目录，数据库和 Cookie 加密密钥都会保存在该目录。该目录已被 Git 忽略。部署时挂载持久化卷，备份应包含数据库和密钥，运行中的 SQLite 应通过备份 API 或在服务停止后备份，不能只拷贝活跃的 `.db` 文件而漏掉 WAL。
 
-生产环境必须使用 HTTPS，Cookie 设置为 Secure / HttpOnly / SameSite=Strict。建议前端和 API 通过同一域名的 `/v1` 路由访问，不启用跨域 Cookie。所有写请求（包括注册、登录）必须发送 `X-TomCat-Request: 1`，配合禁止跨域 CORS 防止跨站请求。应用读取反向代理提供的 `X-Forwarded-For` 和 `X-Forwarded-Proto`，认证接口按客户端 IP 每分钟最多 20 次。当前密码使用 ASP.NET Core PasswordHasher 哈希。
+生产环境必须使用 HTTPS，Cookie 设置为 Secure / HttpOnly / SameSite=Strict。建议前端和 API 通过同一域名的 `/v1` 路由访问，不启用跨域 Cookie。所有写请求（包括注册、登录）必须发送 `X-TomCat-Request: 1`，配合禁止跨域 CORS 防止跨站请求。应用读取反向代理提供的 `X-Forwarded-For` 和 `X-Forwarded-Proto`，认证接口按客户端 IP 每分钟最多 20 次。Netlify 部署须配置 `Proxy__Secret`，与 Netlify Runtime 变量 `TOMCAT_PROXY_SECRET` 相同；应用验证 `x-nf-sign` 的 HS256 签名和有效期后，使用 Netlify 提供的 `x-nf-client-connection-ip` 限流，避免 CDN 出口变化导致计数分散。配置签名密钥后，未签名的认证请求返回 403，认证请通过前端同源 `/v1/auth/*` 访问。当前密码使用 ASP.NET Core PasswordHasher 哈希。
 
 ## Docker
 
@@ -41,7 +41,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## Railway 部署
 
-1. 在 Railway 新建服务并连接 `Tc_Engine_Web_backend` GitHub 仓库。根目录的 `Dockerfile` 会被自动识别，`railway.json` 会配置 `/health` 健康检查和失败重启。
+1. 在 Railway 新建服务并连接 `Tc_Engine_Web_backend` GitHub 仓库。根目录的 `Dockerfile` 会被自动识别，`railway.json` 会配置 `/health` 健康检查和失败重启。此检查直接访问 Railway 服务容器，不经过前端 Netlify 域名。
 2. 给服务添加 Volume，挂载路径必须填写 `/data`。数据库和登录 Cookie 密钥都依赖此卷；没有卷时，重新部署会丢失数据并使现有登录失效。
 3. 在 Networking 中生成 Railway 域名。Railway 自动注入 `PORT`，无需手工填写端口或启动命令。
 4. 保持单副本运行。当前使用单文件 SQLite 和单个 Railway Volume，不支持多副本并发部署。
