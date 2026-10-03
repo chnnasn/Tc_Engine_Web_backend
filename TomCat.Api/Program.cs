@@ -25,6 +25,12 @@ var dataDirectory = Path.GetFullPath(builder.Configuration["Storage:Directory"] 
 Directory.CreateDirectory(dataDirectory);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 16 * 1024 * 1024);
 builder.Services.AddSingleton(new Database(dataDirectory));
+builder.Services.AddSingleton<VerificationMail>();
+builder.Services.AddHttpClient("verification-mail", client =>
+{
+    client.BaseAddress = new Uri("https://api.resend.com/");
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
 builder.Services.AddSingleton<WorkingStates>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<WorkingStates>());
 builder.Services.AddSingleton<IPasswordHasher<UserRow>, PasswordHasher<UserRow>>();
@@ -91,33 +97,30 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 EditorSessions.Map(app);
 GamePackages.Map(app);
 
-app.MapPost("/v1/auth/register", async (Credentials input, Database db, IPasswordHasher<UserRow> hasher, HttpContext context) =>
-{
-    if (input.Username is null || !Regex.IsMatch(input.Username, "^[a-zA-Z0-9_]{3,32}$") ||
-        input.Password is null || input.Password.Length is < 12 or > 128)
-        return Results.BadRequest(new { error = "用户名须为 3–32 个字母、数字或下划线；密码须为 12–128 个字符。" });
-    var user = new UserRow(Database.Id(), input.Username, "");
-    user = user with { PasswordHash = hasher.HashPassword(user, input.Password) };
-    try { db.CreateUser(user); }
-    catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
-    { return Results.Conflict(new { error = "用户名已存在。" }); }
-    await SignIn(context, user);
-    return Results.Created("/v1/auth/me", new { user.Id, user.Username });
-}).RequireRateLimiting("auth");
-
+EmailAuth.Map(app);
 app.MapPost("/v1/auth/login", async (Credentials input, Database db, IPasswordHasher<UserRow> hasher, HttpContext context) =>
 {
-    if (string.IsNullOrWhiteSpace(input.Username) || input.Username.Length > 32 || input.Password is null || input.Password.Length > 128)
+    var login = (input.Email ?? input.Username)?.Trim();
+    if (string.IsNullOrWhiteSpace(login) || login.Length > 254 || input.Password is null || input.Password.Length > 128)
         return Results.Unauthorized();
-    var user = db.FindUser(input.Username);
-    if (user is null || hasher.VerifyHashedPassword(user, user.PasswordHash, input.Password) == PasswordVerificationResult.Failed)
-        return Results.Unauthorized();
-    await SignIn(context, user);
-    return Results.Ok(new { user.Id, user.Username });
+    using var connection = db.Open();
+    // Username login remains available only to accounts that have not yet bound an email.
+    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at FROM users WHERE (email=$login AND email_verified_at IS NOT NULL) OR (username=$login AND email IS NULL);", null, ("$login", login));
+    using var reader = query.ExecuteReader();
+    if (!reader.Read()) return Results.Unauthorized();
+    var user = new UserRow(reader.GetString(0), reader.GetString(1), reader.GetString(2));
+    if (hasher.VerifyHashedPassword(user, user.PasswordHash, input.Password) == PasswordVerificationResult.Failed) return Results.Unauthorized();
+    var result = EmailAuth.PublicUser(reader);
+    await EmailAuth.SignIn(context, user.Id, user.Username);
+    return Results.Ok(result);
 }).RequireRateLimiting("auth");
-
-app.MapGet("/v1/auth/me", (HttpContext context) => Results.Ok(new { id = Owner(context), username = context.User.Identity!.Name }))
-    .RequireAuthorization();
+app.MapGet("/v1/auth/me", (HttpContext context, Database db) =>
+{
+    using var connection = db.Open();
+    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at FROM users WHERE id=$id;", null, ("$id", Owner(context)));
+    using var reader = query.ExecuteReader();
+    return reader.Read() ? Results.Ok(EmailAuth.PublicUser(reader)) : Results.Unauthorized();
+}).RequireAuthorization();
 app.MapPost("/v1/auth/logout", async (HttpContext context) =>
 {
     await context.SignOutAsync();
@@ -237,8 +240,6 @@ projects.MapGet("/{id}/revisions/{revisionId}", (string id, string revisionId, D
 app.Run();
 
 static string Owner(HttpContext context) => context.User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-static Task SignIn(HttpContext context, UserRow user) => context.SignInAsync(new ClaimsPrincipal(new ClaimsIdentity(
-    [new Claim(ClaimTypes.NameIdentifier, user.Id), new Claim(ClaimTypes.Name, user.Username)], CookieAuthenticationDefaults.AuthenticationScheme)));
 static bool ValidProject(ProjectInput input) => input.Name?.Trim().Length is > 0 and <= 64 &&
     (input.Description?.Length ?? 0) <= 1000 && (input.Template is null or "2D" or "空白");
 static bool ValidRevision(JsonElement payload, out List<RevisionFile> files)

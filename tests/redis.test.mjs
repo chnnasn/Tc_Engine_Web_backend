@@ -1,3 +1,4 @@
+import { emailRegister, mailedCode } from './email-helper.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
@@ -41,7 +42,7 @@ test('Redis working snapshots and SQLite checkpoints', { timeout: 90000, skip: !
   const startRedis = () => start(executable, ['--bind', '127.0.0.1', '--port', String(port), '--appendonly', 'yes', '--appendfsync', 'always', '--maxmemory-policy', 'noeviction'], directory, {}, /Ready to accept connections/i)
   const startApi = async (interval = '3600') => {
     api = await start('dotnet', [join(apiDir, 'bin/Release/net10.0/TomCat.Api.dll'), '--urls', 'http://127.0.0.1:0'], apiDir,
-      { ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, Redis__ConnectionString: `127.0.0.1:${port},connectTimeout=1000,asyncTimeout=1000`, Redis__KeyPrefix: 'test:', Redis__FlushIntervalSeconds: interval }, /Now listening on:/)
+      { ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, Mail__PickupDirectory: join(directory, 'mail'), Redis__ConnectionString: `127.0.0.1:${port},connectTimeout=1000,asyncTimeout=1000`, Redis__KeyPrefix: 'test:', Redis__FlushIntervalSeconds: interval }, /Now listening on:/)
     base = api.output().match(/Now listening on:\s+(http:\/\/127\.0\.0\.1:\d+)/)[1]
   }
   const cookies = new Map()
@@ -55,7 +56,7 @@ test('Redis working snapshots and SQLite checkpoints', { timeout: 90000, skip: !
   const put = (archive, etag = token, extra = {}) => request(`/projects/${project.id}/working-state`, { method: 'PUT', body: { ...manifest, archive }, headers: etag ? { 'If-Match': etag } : { 'If-None-Match': '*' }, ...extra })
   try {
     redis = await startRedis(); await startApi()
-    for (const user of ['alice', 'bob']) assert.equal((await request('/auth/register', { method: 'POST', user, body: { username: user, password: 'integration-test-password' } })).status, 201)
+    for (const user of ['alice', 'bob']) assert.equal((await emailRegister((path, body) => request(path, { method: 'POST', user, body }), directory, user, 'integration-test-password')).status, 200)
     project = await (await request('/projects', { method: 'POST', body: { name: 'Realtime', template: '2D' } })).json()
     const bytes = Buffer.from('{}'), hash = createHash('sha256').update(bytes).digest('hex')
     const upload = await (await request(`/projects/${project.id}/uploads/${hash}`, { method: 'PUT', bytes })).json()

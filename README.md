@@ -53,13 +53,13 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 接口
 
-除健康检查、注册、登录和已发布作品的公开游玩接口外，接口均要求登录；其他用户的项目返回 404。
+除健康检查、注册、邮箱验证、注册完成、登录和已发布作品的公开游玩接口外，接口均要求登录；其他用户的项目返回 404。
 
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
 | GET | `/health` | 进程健康检查 |
-| POST | `/v1/auth/register` | `{ username, password }` 注册并登录 |
-| POST | `/v1/auth/login` | `{ username, password }` 登录 |
+| POST | `/v1/auth/register` | `{ email, password }` 发送邮箱验证码；验证后设置用户名完成注册 |
+| POST | `/v1/auth/login` | `{ email, password }` 登录；未绑定邮箱的旧账号支持原用户名 |
 | POST | `/v1/auth/logout` | 清除当前浏览器登录 Cookie |
 | GET | `/v1/auth/me` | 当前用户 |
 | GET / POST | `/v1/projects` | 列出自己的项目 / 创建项目 |
@@ -199,3 +199,47 @@ node --test tests/redis.test.mjs
 ```
 
 Redis 集成测试使用临时 Redis、临时 SQLite 和测试账号，覆盖权限、并发条件、Redis/API 重启、定时落库、提交后重复执行、立即保存、故障和删除。Redis 可执行文件旁需有 redis-cli；测试使用独立随机端口。
+
+## 邮箱注册与旧账号绑定
+
+新用户流程：邮箱和密码 → 六位邮件验证码 → 设置用户名 → 登录。邮箱作为登录标识，用户名作为展示名称（仍保持唯一）。验证码十分钟有效，最多五次错误尝试；同一邮箱重发间隔至少六十秒。验证码和注册完成令牌只保存 SHA-256 哈希，完成令牌十分钟有效且只可使用一次。邮箱验证前不创建账号、不签发登录 Cookie。
+
+已有账号：未绑定邮箱时仍可用原用户名和密码登录，在账号弹窗点击“绑定邮箱”。验证后保留原用户 ID、用户名、密码、项目和修订，以后用邮箱登录。数据库新增 `004_email_auth.sql` 自动迁移，不删除既有数据。
+
+Railway 发信变量（需自行申请 SMTP 服务）：
+
+```text
+Mail__Host=smtp.example.com
+Mail__Port=587
+Mail__From=your-verified-sender@example.com
+Mail__Username=your-smtp-user
+Mail__Password=your-smtp-password
+```
+
+使用 SMTP STARTTLS（通常为 587 端口），发件地址必须符合邮件服务商要求。密码仅配置在 Railway 变量中，不写入仓库。SMTP 未配置时注册和邮箱绑定返回明确的 503 提示，不绕过验证；原账号登录与已有项目不受影响。
+
+开发环境可设置 `Mail__PickupDirectory` 为绝对路径，将实际验证邮件写入本地目录，不连接 SMTP。此模式只在 `ASPNETCORE_ENVIRONMENT=Development` 生效，禁止用于生产。生产不要配置此变量。无需配置验证链接地址，前端输入邮件验证码即可完成验证。
+
+认证接口：
+- `POST /v1/auth/register`：`{ email, password }` → `{ challengeId, expiresIn, resendAfter }`
+- `POST /v1/auth/verify-email`：`{ challengeId, code }` → `{ token, binding }`
+- `POST /v1/auth/complete-registration`：`{ token, username }` → 用户资料及会话 Cookie
+- `POST /v1/auth/bind-email`（已登录）：`{ email }` → 验证挑战，后续复用上述验证与完成接口
+- `POST /v1/auth/login`：`{ email, password }`；尚未绑定邮箱的旧账号仍支持 `{ username, password }`
+- `GET /v1/auth/me`：`{ id, username, email, emailVerified }`
+
+所有写请求仍需要 `X-TomCat-Request: 1`。绑定完成必须使用发起绑定的原用户会话。
+
+验证：`dotnet build TomCat.Api -c Release`，然后 `node --test tests/*.test.mjs`。测试使用开发邮件目录读取真实邮件内容，不提供获取验证码的 HTTP 接口。
+
+### Resend API（Railway 推荐）
+
+Railway Free、Trial、Hobby 套餐禁止外连 SMTP，请使用 HTTPS API。新增 Resend 支持，后端服务 Variables 配置：
+
+```text
+Mail__Provider=Resend
+Mail__ApiKey=填入新创建的仅发信API密钥
+Mail__From=TomCat <noreply@你已验证的域名>
+```
+
+在 Resend 验证发件域名及 DNS 后再配置 `Mail__From`。密钥只保存到 Railway，禁止提交仓库或放入前端环境变量。使用 API 时不需要 SMTP Host、Port、Username、Password；生产不要设置开发用 PickupDirectory。未验证自己的域名时 Resend 默认试用发件地址有收件限制，不能直接用于向所有注册用户发送验证码。

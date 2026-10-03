@@ -1,3 +1,4 @@
+import { emailRegister, mailedCode } from './email-helper.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -13,7 +14,7 @@ const assembly = resolve(apiDirectory, 'bin/Release/net10.0/TomCat.Api.dll')
 async function start(directory, extraEnv = {}) {
   const process = spawn('dotnet', [assembly, '--urls', 'http://127.0.0.1:0'], {
     cwd: apiDirectory,
-    env: { ...globalThis.process.env, ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, ...extraEnv },
+    env: { ...globalThis.process.env, ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, Mail__PickupDirectory: join(directory, 'mail'), ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
@@ -79,9 +80,9 @@ async function client(api, cookies) {
   }
 }
 
-async function register(request, username) {
-  const response = await request('/v1/auth/register', { user: username, method: 'POST', body: { username, password: 'publish-test-1234' } })
-  assert.equal(response.status, 201)
+async function register(request, username, directory) {
+  const response = await emailRegister((path, body) => request('/v1' + path, { user: username, method: 'POST', body }), directory, username, 'publish-test-1234')
+  assert.equal(response.status, 200)
 }
 
 async function createSavedProject(request, name, user = 'alice') {
@@ -126,7 +127,7 @@ test('publish chain: save, publish, cook, play publicly', { timeout: 120000 }, a
   const request = await client(api, cookies)
   t.after(() => api.stop())
   try {
-    await register(request, 'alice')
+    await register(request, 'alice', directory)
     const { projectId } = await createSavedProject(request, '夜航')
 
     // Guests see an empty arcade before the first publish.
@@ -141,7 +142,7 @@ test('publish chain: save, publish, cook, play publicly', { timeout: 120000 }, a
     assert.equal(anonymous.status, 401)
 
     // A project without a saved revision cannot be published.
-    await register(request, 'bob')
+    await register(request, 'bob', directory)
     const draft = await json(await request('/v1/projects', { user: 'bob', method: 'POST', body: { name: '空项目', description: '', template: '2D' } }))
     const noRevision = await request(`/v1/projects/${draft.id}/publish`, { user: 'bob', method: 'POST', body: { title: '空' } })
     assert.equal(noRevision.status, 400)
@@ -225,7 +226,7 @@ test('publish is rejected while the cook tool is not configured', { timeout: 600
   const request = await client(api, cookies)
   t.after(() => api.stop())
   try {
-    await register(request, 'carol')
+    await register(request, 'carol', directory)
     const { projectId } = await createSavedProject(request, '无工具', 'carol')
     // The helper turns unexpected 5xx responses into errors; this 503 is the expected outcome.
     const response = await fetch(`${api.baseUrl}/v1/projects/${projectId}/publish`, {

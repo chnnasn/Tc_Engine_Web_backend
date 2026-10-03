@@ -1,3 +1,4 @@
+import { emailRegister, mailedCode } from './email-helper.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -14,7 +15,7 @@ const assembly = resolve(apiDirectory, 'bin/Release/net10.0/TomCat.Api.dll')
 async function start(directory) {
   const process = spawn('dotnet', [assembly, '--urls', 'http://127.0.0.1:0'], {
     cwd: apiDirectory,
-    env: { ...globalThis.process.env, ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory },
+    env: { ...globalThis.process.env, ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, Mail__PickupDirectory: join(directory, 'mail') },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
@@ -80,7 +81,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
 
     await t.test('v1 database upgrades without changing existing revisions', async () => {
       const db = new DatabaseSync(join(directory, 'tomcat.db'))
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3)
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4)
       assert.equal(db.prepare("SELECT payload FROM revisions WHERE id='migration-revision'").get().payload, '{"schemaVersion":1}')
       // 发布表随 003 迁移建立：新增的发布能力不得影响既有修订数据。
       assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='publications'").get()?.name, 'publications')
@@ -112,15 +113,15 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
     await t.test('authentication, CSRF header, password validation and duplicate accounts', async () => {
       assert.equal((await request('/v1/projects')).status, 401)
       assert.equal((await request('/v1/auth/register', { method: 'POST', headers: { 'X-TomCat-Request': '' }, body: {} })).status, 403)
-      assert.equal((await request('/v1/auth/register', { method: 'POST', body: { username: 'alice', password: 'short' } })).status, 400)
+      assert.equal((await request('/v1/auth/register', { method: 'POST', body: { email: 'alice@example.com', password: 'short' } })).status, 400)
       for (const user of ['alice', 'bob']) {
-        const response = await request('/v1/auth/register', { user, method: 'POST', body: { username: user, password: 'test-password-12345' } })
-        assert.equal(response.status, 201)
+        const response = await emailRegister((path, body) => request('/v1' + path, { user, method: 'POST', body }), directory, user, 'test-password-12345')
+        assert.equal(response.status, 200)
         assert.match(response.headers.get('set-cookie'), /httponly/i)
         assert.match(response.headers.get('set-cookie'), /samesite=strict/i)
       }
-      assert.equal((await request('/v1/auth/register', { method: 'POST', body: { username: 'ALICE', password: 'test-password-12345' } })).status, 409)
-      assert.equal((await request('/v1/auth/login', { user: 'anonymous', method: 'POST', body: { username: 'alice', password: 'incorrect-password' } })).status, 401)
+      assert.equal((await request('/v1/auth/register', { method: 'POST', body: { email: 'ALICE@example.com', password: 'test-password-12345' } })).status, 409)
+      assert.equal((await request('/v1/auth/login', { user: 'anonymous', method: 'POST', body: { email: 'alice@example.com', password: 'incorrect-password' } })).status, 401)
       assert.equal((await request('/v1/auth/me')).status, 200)
     })
 
@@ -258,7 +259,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
     await t.test('logout, login and deletion', async () => {
       assert.equal((await request('/v1/auth/logout', { method: 'POST' })).status, 204)
       assert.equal((await request('/v1/auth/me')).status, 401)
-      assert.equal((await request('/v1/auth/login', { method: 'POST', body: { username: 'alice', password: 'test-password-12345' } })).status, 200)
+      assert.equal((await request('/v1/auth/login', { method: 'POST', body: { email: 'alice@example.com', password: 'test-password-12345' } })).status, 200)
       assert.equal((await request(`/v1/projects/${project.id}`, { method: 'DELETE' })).status, 204)
       assert.equal((await request(`/v1/projects/${project.id}/revisions/${first.revisionId}`)).status, 404)
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${manifest.files[0].uploadId}`)).status, 404)

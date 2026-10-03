@@ -1,3 +1,4 @@
+import { emailRegister, mailedCode } from './email-helper.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
@@ -21,7 +22,7 @@ test('editor leases enforce ownership, request identity, result binding and revo
     const apiDir = resolve('TomCat.Api')
     child = spawn('dotnet', [join(apiDir, 'bin/Release/net10.0/TomCat.Api.dll'), '--urls', 'http://127.0.0.1:0'], {
       cwd: apiDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, Agent__Url: `http://127.0.0.1:${agent.address().port}`, Agent__Secret: secret },
+      env: { ...process.env, ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, Mail__PickupDirectory: join(directory, 'mail'), Agent__Url: `http://127.0.0.1:${agent.address().port}`, Agent__Secret: secret },
     })
     const base = await new Promise((ok, no) => {
       let output = ''; const timer = setTimeout(() => no(new Error(output)), 20000)
@@ -34,8 +35,8 @@ test('editor leases enforce ownership, request identity, result binding and revo
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     for (const user of ['alice', 'bob']) {
-      const response = await request('/v1/auth/register', 'POST', { username: user, password: 'long-test-password-123' }, user)
-      assert.equal(response.status, 201); cookies[user] = response.headers.get('set-cookie').split(';')[0]
+      const response = await emailRegister((path, body) => request('/v1' + path, 'POST', body, user), directory, user, 'long-test-password-123')
+      assert.equal(response.status, 200); cookies[user] = response.headers.get('set-cookie').split(';')[0]
     }
     const project = await (await request('/v1/projects', 'POST', { name: 'editor test', template: '2D' })).json()
     const registration = { projectId: project.id, engineCommit: '0'.repeat(40) }
