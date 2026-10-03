@@ -81,7 +81,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
 
     await t.test('v1 database upgrades without changing existing revisions', async () => {
       const db = new DatabaseSync(join(directory, 'tomcat.db'))
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4)
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5)
       assert.equal(db.prepare("SELECT payload FROM revisions WHERE id='migration-revision'").get().payload, '{"schemaVersion":1}')
       // 发布表随 003 迁移建立：新增的发布能力不得影响既有修订数据。
       assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='publications'").get()?.name, 'publications')

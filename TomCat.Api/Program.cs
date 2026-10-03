@@ -44,6 +44,19 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     options.Cookie.SecurePolicy = builder.Environment.IsDevelopment() ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
     options.ExpireTimeSpan = TimeSpan.FromHours(8);
     options.SlidingExpiration = false;
+    options.Events.OnValidatePrincipal = async context =>
+    {
+        using var connection = context.HttpContext.RequestServices.GetRequiredService<Database>().Open();
+        using var query = Database.Command(connection, "SELECT session_version FROM users WHERE id=$id;", null,
+            ("$id", context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier)));
+        var stored = query.ExecuteScalar();
+        var claimed = context.Principal?.FindFirstValue("session_version") ?? "0";
+        if (stored is null || !long.TryParse(claimed, out var version) || Convert.ToInt64(stored) != version)
+        {
+            context.RejectPrincipal();
+            await context.HttpContext.SignOutAsync();
+        }
+    };
     options.Events.OnRedirectToLogin = context => { context.Response.StatusCode = 401; return Task.CompletedTask; };
     options.Events.OnRedirectToAccessDenied = context => { context.Response.StatusCode = 403; return Task.CompletedTask; };
 });
@@ -98,6 +111,7 @@ EditorSessions.Map(app);
 GamePackages.Map(app);
 
 EmailAuth.Map(app);
+PasswordAuth.Map(app);
 app.MapPost("/v1/auth/login", async (Credentials input, Database db, IPasswordHasher<UserRow> hasher, HttpContext context) =>
 {
     var login = (input.Email ?? input.Username)?.Trim();
@@ -105,13 +119,13 @@ app.MapPost("/v1/auth/login", async (Credentials input, Database db, IPasswordHa
         return Results.Unauthorized();
     using var connection = db.Open();
     // Username login remains available only to accounts that have not yet bound an email.
-    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at FROM users WHERE (email=$login AND email_verified_at IS NOT NULL) OR (username=$login AND email IS NULL);", null, ("$login", login));
+    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at,session_version FROM users WHERE (email=$login AND email_verified_at IS NOT NULL) OR (username=$login AND email IS NULL);", null, ("$login", login));
     using var reader = query.ExecuteReader();
     if (!reader.Read()) return Results.Unauthorized();
     var user = new UserRow(reader.GetString(0), reader.GetString(1), reader.GetString(2));
     if (hasher.VerifyHashedPassword(user, user.PasswordHash, input.Password) == PasswordVerificationResult.Failed) return Results.Unauthorized();
     var result = EmailAuth.PublicUser(reader);
-    await EmailAuth.SignIn(context, user.Id, user.Username);
+    await EmailAuth.SignIn(context, user.Id, user.Username, reader.GetInt64(5));
     return Results.Ok(result);
 }).RequireRateLimiting("auth");
 app.MapGet("/v1/auth/me", (HttpContext context, Database db) =>

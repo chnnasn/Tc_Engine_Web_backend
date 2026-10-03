@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 export async function mailedCode(directory, email) {
-  for (const file of (await readdir(join(directory, 'mail'))).reverse()) {
+  const files = await Promise.all((await readdir(join(directory, 'mail'))).map(async file => ({ file, modified: (await stat(join(directory, 'mail', file))).mtimeMs })))
+  for (const { file } of files.sort((a, b) => b.modified - a.modified)) {
     const message = await readFile(join(directory, 'mail', file), 'utf8')
     if (!message.includes(`To: ${email}`)) continue
     const body = message.split(/\r?\n\r?\n/).slice(1).join('\n')

@@ -21,22 +21,23 @@ public sealed class VerificationMail(IConfiguration config, IHostEnvironment env
     bool Resend => string.Equals(config["Mail:Provider"], "Resend", StringComparison.OrdinalIgnoreCase);
     public bool Ready => Pickup || !string.IsNullOrWhiteSpace(config["Mail:From"]) &&
         (Resend ? !string.IsNullOrWhiteSpace(config["Mail:ApiKey"]) : !string.IsNullOrWhiteSpace(config["Mail:Host"]));
-    public async Task Send(string email, string code)
+    public async Task Send(string email, string code, bool recovery = false)
     {
+        var subject = recovery ? "TC Fun 密码重置验证码" : "TomCat 邮箱验证码";
+        var text = recovery ? $"你正在重置 TC Fun 账号密码。验证码是 {code}，10 分钟内有效。如非本人操作，请忽略此邮件；不要向他人提供验证码。" : $"你的验证码是 {code}，10 分钟内有效。如非本人操作，请忽略此邮件。";
         if (Resend && !Pickup)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, "emails");
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config["Mail:ApiKey"]);
             request.Content = JsonContent.Create(new {
-                from = config["Mail:From"], to = new[] { email }, subject = "TomCat 邮箱验证码",
-                text = $"你的验证码是 {code}，10 分钟内有效。如非本人操作，请忽略此邮件。"
+                from = config["Mail:From"], to = new[] { email }, subject, text
             });
             using var response = await clients.CreateClient("verification-mail").SendAsync(request);
             if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Mail provider returned HTTP {(int)response.StatusCode}.");
             return;
         }
         using var message = new MailMessage(config["Mail:From"] ?? "test@localhost", email,
-            "TomCat 邮箱验证码", $"你的验证码是 {code}，10 分钟内有效。如非本人操作，请忽略此邮件。");
+            subject, text);
         using var smtp = new SmtpClient(config["Mail:Host"] ?? "localhost", config.GetValue("Mail:Port", 587));
         if (environment.IsDevelopment() && config["Mail:PickupDirectory"] is { Length: > 0 } pickup)
         {
@@ -65,8 +66,8 @@ public static class EmailAuth
         return value;
     }
     public static object PublicUser(SqliteDataReader reader) => new { id = reader.GetString(0), username = reader.GetString(1), email = reader.IsDBNull(3) ? null : reader.GetString(3), emailVerified = !reader.IsDBNull(4) };
-    public static Task SignIn(HttpContext context, string id, string username) => context.SignInAsync(new ClaimsPrincipal(new ClaimsIdentity(
-        [new Claim(ClaimTypes.NameIdentifier, id), new Claim(ClaimTypes.Name, username)], CookieAuthenticationDefaults.AuthenticationScheme)));
+    public static Task SignIn(HttpContext context, string id, string username, long version = 0) => context.SignInAsync(new ClaimsPrincipal(new ClaimsIdentity(
+        [new Claim(ClaimTypes.NameIdentifier, id), new Claim(ClaimTypes.Name, username), new Claim("session_version", version.ToString())], CookieAuthenticationDefaults.AuthenticationScheme)));
 
     public static void Map(WebApplication app)
     {
@@ -122,8 +123,12 @@ public static class EmailAuth
                 }
             }
             catch (SqliteException exception) when (exception.SqliteErrorCode == 19) { return Results.Conflict(new { error = "邮箱或用户名已被使用。" }); }
-            using var delete = Database.Command(connection, "DELETE FROM email_challenges WHERE email=$email;", transaction, ("$email", email)); delete.ExecuteNonQuery(); transaction.Commit();
-            await SignIn(context, id, username);
+            using var delete = Database.Command(connection, "DELETE FROM email_challenges WHERE email=$email;", transaction, ("$email", email)); delete.ExecuteNonQuery();
+            using var sessionQuery = Database.Command(connection, "SELECT session_version FROM users WHERE id=$id;", transaction, ("$id", id));
+            var sessionVersion = Convert.ToInt64(sessionQuery.ExecuteScalar());
+            if (owner is not null && (context.User.FindFirstValue("session_version") ?? "0") != sessionVersion.ToString()) return Results.Unauthorized();
+            transaction.Commit();
+            await SignIn(context, id, username, sessionVersion);
             return Results.Ok(new { id, username, email, emailVerified = true });
         }).RequireRateLimiting("auth");
     }

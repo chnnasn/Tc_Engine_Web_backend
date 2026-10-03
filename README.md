@@ -243,3 +243,14 @@ Mail__From=TomCat <noreply@你已验证的域名>
 ```
 
 在 Resend 验证发件域名及 DNS 后再配置 `Mail__From`。密钥只保存到 Railway，禁止提交仓库或放入前端环境变量。使用 API 时不需要 SMTP Host、Port、Username、Password；生产不要设置开发用 PickupDirectory。未验证自己的域名时 Resend 默认试用发件地址有收件限制，不能直接用于向所有注册用户发送验证码。
+
+### 找回密码与修改密码
+
+登录表单提供“忘记密码”，通过已绑定且验证的邮箱接收六位验证码，再提交验证码和新密码。账号面板提供“修改密码”，必须验证当前密码。新密码须为 12–128 个字符，修改密码不能与当前密码相同。
+
+新增接口（写请求仍需 `X-TomCat-Request: 1`）：
+- `POST /v1/auth/forgot-password`：`{ email }` → `{ challengeId, expiresIn, resendAfter, message }`。未知邮箱与已绑定邮箱返回相同结构和提示；只有已验证账号会收到邮件。重发间隔至少 60 秒。
+- `POST /v1/auth/reset-password`：`{ challengeId, code, newPassword }`。验证码十分钟有效，最多五次错误尝试；使用后即删除，不能复用注册验证码。
+- `POST /v1/auth/change-password`（已登录）：`{ currentPassword, newPassword }`。
+
+迁移 `005_password_recovery.sql` 保留原用户与项目，增加会话版本及独立找回密码挑战表。改密/重置密码后旧设备 Cookie 在后续请求时失效，需重新登录；已有会话没有版本标记时按版本 0 兼容。所有未完成的找回密码挑战和该账号的邮箱绑定挑战同时失效。尚未绑定邮箱的旧账号无法通过邮箱找回，需先登录绑定。
