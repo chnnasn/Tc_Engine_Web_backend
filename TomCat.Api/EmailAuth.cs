@@ -23,14 +23,15 @@ public sealed class VerificationMail(IConfiguration config, IHostEnvironment env
         (Resend ? !string.IsNullOrWhiteSpace(config["Mail:ApiKey"]) : !string.IsNullOrWhiteSpace(config["Mail:Host"]));
     public async Task Send(string email, string code, bool recovery = false)
     {
-        var subject = recovery ? "TC Fun 密码重置验证码" : "TomCat 邮箱验证码";
+        var subject = recovery ? "TC Fun 密码重置验证码" : "TC Fun 邮箱验证码";
         var text = recovery ? $"你正在重置 TC Fun 账号密码。验证码是 {code}，10 分钟内有效。如非本人操作，请忽略此邮件；不要向他人提供验证码。" : $"你的验证码是 {code}，10 分钟内有效。如非本人操作，请忽略此邮件。";
+        var html = MailTemplate.Render(code, recovery);
         if (Resend && !Pickup)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, "emails");
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config["Mail:ApiKey"]);
             request.Content = JsonContent.Create(new {
-                from = config["Mail:From"], to = new[] { email }, subject, text
+                from = config["Mail:From"], to = new[] { email }, subject, text, html
             });
             using var response = await clients.CreateClient("verification-mail").SendAsync(request);
             if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Mail provider returned HTTP {(int)response.StatusCode}.");
@@ -38,6 +39,9 @@ public sealed class VerificationMail(IConfiguration config, IHostEnvironment env
         }
         using var message = new MailMessage(config["Mail:From"] ?? "test@localhost", email,
             subject, text);
+        message.BodyEncoding = Encoding.UTF8;
+        message.SubjectEncoding = Encoding.UTF8;
+        message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(html, Encoding.UTF8, "text/html"));
         using var smtp = new SmtpClient(config["Mail:Host"] ?? "localhost", config.GetValue("Mail:Port", 587));
         if (environment.IsDevelopment() && config["Mail:PickupDirectory"] is { Length: > 0 } pickup)
         {
