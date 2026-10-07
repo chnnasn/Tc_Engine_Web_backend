@@ -245,7 +245,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
     })
 
-    for (const engineCommit of ['053fcce44c36ef94c4bd4a3750da7eb4e75d0303', '2ee941e6ad50e5797ec91bbfb90d0d29a0ece30e']) await t.test(`editor-only engine update ${engineCommit.slice(0, 8)} preserves project history`, async () => {
+    for (const engineCommit of ['053fcce44c36ef94c4bd4a3750da7eb4e75d0303', '2ee941e6ad50e5797ec91bbfb90d0d29a0ece30e', 'bb692873f48ec3eff092b1991c693224e5613b4e']) await t.test(`editor-only engine update ${engineCommit.slice(0, 8)} preserves project history`, async () => {
       const previous = fullRevision.revisionId
       const oldManifest = manifest
       manifest = { ...manifest, engineCommit }
