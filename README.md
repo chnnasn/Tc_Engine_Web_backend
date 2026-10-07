@@ -243,6 +243,20 @@ Mail__From=TomCat <noreply@你已验证的域名>
 
 在 Resend 验证发件域名及 DNS 后再配置 `Mail__From`。密钥只保存到 Railway，禁止提交仓库或放入前端环境变量。使用 API 时不需要 SMTP Host、Port、Username、Password；生产不要设置开发用 PickupDirectory。未验证自己的域名时 Resend 默认试用发件地址有收件限制，不能直接用于向所有注册用户发送验证码。
 
+### 项目 AI 会话
+
+`projectId` 标识项目，`sessionId` 标识该项目中的持久对话，`runId` 标识一次异步任务；`editorSessionId` 仍是短期工具连接，其关闭不会删除聊天记录。
+
+- `GET/POST /v1/projects/{projectId}/ai-sessions/`：列出/创建当前账号拥有的项目对话。
+- `GET /v1/projects/{projectId}/ai-sessions/{sessionId}?before={turnId}`：读取最近 30 轮，使用 `hasMore` / `nextBefore` 向前翻页。
+- `POST /v1/editor-sessions/{editorSessionId}/agent-runs` 增加 `sessionId`。历史只由后端从数据库选择，客户端不能提交其他会话的上下文。
+
+迁移 `006_ai_conversations.sql` 增加 SQLite 会话和轮次表，保存在既有持久卷中。记录用户输入、回答及失败状态；每个会话同时只允许一个任务，同一个 runId 不能通过新连接重复执行。成功结果落库后才返回完成状态。后端重启将遗留执行中任务标为中断，不会自动重放场景操作。保持现有单实例编辑器连接部署方式。
+
+模型上下文最多取本会话最近 20 轮成功对话、总计 60000 字符，超长单条回复在模型上下文中截断；完整历史仍可分页查看。历史不包含委托凭证、工具执行令牌或其他项目内容；项目删除时关联对话一并删除。升级前未保存的临时对话无法恢复。
+
+`node --test tests/ai-conversations.test.mjs` 验证账号/项目/会话隔离、分页、幂等、并发、服务重启与取消状态。
+
 ### 找回密码与修改密码
 
 登录表单提供“忘记密码”，通过已绑定且验证的邮箱接收六位验证码，再提交验证码和新密码。账号面板提供“修改密码”，必须验证当前密码。新密码须为 12–128 个字符，修改密码不能与当前密码相同。

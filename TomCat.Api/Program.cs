@@ -82,6 +82,7 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 app.Services.GetRequiredService<Database>().Initialize();
+AiConversations.Recover(app.Services.GetRequiredService<Database>());
 app.UseForwardedHeaders();
 app.UseExceptionHandler();
 app.Use(async (context, next) =>
@@ -114,6 +115,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 EditorSessions.Map(app);
+AiConversations.Map(app);
 GamePackages.Map(app);
 
 EmailAuth.Map(app);

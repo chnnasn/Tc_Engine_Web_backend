@@ -38,9 +38,11 @@ public sealed class EditorSessions
     }
 
     public sealed record RunSnapshot(string RunId, string State, string? Output = null, string? Error = null);
-    public sealed class AgentRun(string id, string prompt)
+    public sealed class AgentRun(string id, string prompt, string? sessionId = null, IReadOnlyList<AiConversations.ChatMessage>? history = null)
     {
         public string Prompt { get; } = prompt;
+        public string? SessionId { get; } = sessionId;
+        public IReadOnlyList<AiConversations.ChatMessage> History { get; } = history ?? [];
         public RunSnapshot Snapshot = new(id, "running");
     }
 
@@ -86,20 +88,21 @@ public sealed class EditorSessions
     public sealed record Registration(string ProjectId, string EngineCommit);
     public sealed record ToolCall(string RequestId, string Name, JsonElement Arguments, bool IsRetry = false);
     public sealed record AgentInput(string Prompt);
-    public sealed record StartRunInput(string RunId, string Prompt);
+    public sealed record StartRunInput(string RunId, string Prompt, string? SessionId = null);
 
     private static async Task ExecuteRun(Session session, AgentRun run, Uri endpoint, string secret,
-        IHttpClientFactory clients, CancellationToken stopping)
+        IHttpClientFactory clients, Database db, ILogger logger, CancellationToken stopping)
     {
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(session.Closed.Token, stopping);
         cancellation.CancelAfter(TimeSpan.FromSeconds(190));
         var runId = run.Snapshot.RunId;
+        RunSnapshot outcome = new(runId, "running");
         try
         {
             using var client = clients.CreateClient("agent");
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint, "/agent/run"));
             request.Headers.Authorization = new("Bearer", secret);
-            request.Content = JsonContent.Create(new { prompt = run.Prompt, sessionToken = session.Token });
+            request.Content = JsonContent.Create(new { prompt = run.Prompt, sessionToken = session.Token, history = run.History });
             var pending = client.SendAsync(request, cancellation.Token);
             // A closed/crashed tab may never send DELETE. Stop when its command polling disappears.
             while (!pending.IsCompleted)
@@ -112,26 +115,38 @@ public sealed class EditorSessions
             using var response = await pending;
             using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellation.Token));
             if (response.IsSuccessStatusCode && body.RootElement.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.String)
-                Volatile.Write(ref run.Snapshot, new(runId, "succeeded", output.GetString()));
+                outcome = new(runId, "succeeded", output.GetString());
             else
             {
                 session.DelegationRevoked = true;
                 var error = body.RootElement.TryGetProperty("error", out var message) && message.ValueKind == JsonValueKind.String
                     ? message.GetString() : "AI 执行失败，请检查模型配置和当前场景。";
-                Volatile.Write(ref run.Snapshot, new(runId, "failed", Error: error));
+                outcome = new(runId, "failed", Error: error);
             }
         }
         catch (OperationCanceledException)
         {
             session.DelegationRevoked = true;
-            Volatile.Write(ref run.Snapshot, new(runId, "failed", Error: "任务已停止或超时，请检查场景后重新连接。已执行的修改会保留。"));
+            outcome = new(runId, "failed", Error: "任务已停止或超时，请检查场景后重新连接。已执行的修改会保留。");
         }
         catch (Exception)
         {
             session.DelegationRevoked = true;
-            Volatile.Write(ref run.Snapshot, new(runId, "failed", Error: "Agent 连接或响应异常，请检查场景后重新连接。已执行的修改会保留。"));
+            outcome = new(runId, "failed", Error: "Agent 连接或响应异常，请检查场景后重新连接。已执行的修改会保留。");
         }
-        finally { session.RunLock.Release(); }
+        finally
+        {
+            try
+            {
+                if (run.SessionId is not null) AiConversations.Complete(db, run.SessionId, outcome);
+            }
+            catch (Exception error)
+            {
+                logger.LogError(error, "Unable to persist AI run {RunId}", runId);
+                outcome = new(runId, "failed", outcome.Output, "任务已结束，但对话记录保存失败，请保留当前结果并检查场景。");
+            }
+            finally { Volatile.Write(ref run.Snapshot, outcome); session.RunLock.Release(); }
+        }
     }
 
     public static void Map(WebApplication app)
@@ -186,7 +201,7 @@ public sealed class EditorSessions
             return Results.NoContent();
         });
         routes.MapPost("/{id}/agent-runs", (string id, StartRunInput input, EditorSessions broker, HttpContext context, Database db,
-            IConfiguration config, IHttpClientFactory clients, IHostApplicationLifetime lifetime) =>
+            IConfiguration config, IHttpClientFactory clients, IHostApplicationLifetime lifetime, ILogger<EditorSessions> logger) =>
         {
             var session = broker.Browser(id, context, db);
             if (session is null) return Results.NotFound();
@@ -198,13 +213,21 @@ public sealed class EditorSessions
             lock (session.AgentGate)
             {
                 if (session.Run is { } previous)
-                    return previous.Snapshot.RunId == input.RunId && previous.Prompt == input.Prompt
+                    return previous.Snapshot.RunId == input.RunId && previous.Prompt == input.Prompt && previous.SessionId == input.SessionId
                         ? Results.Json(Volatile.Read(ref previous.Snapshot), statusCode: 202) : Results.Conflict();
                 if (session.Closed.IsCancellationRequested || !session.RunLock.Wait(0)) return Results.Conflict();
-                var run = new AgentRun(input.RunId, input.Prompt);
+                IReadOnlyList<AiConversations.ChatMessage>? history = null;
+                try
+                {
+                    if (input.SessionId is not null) history = AiConversations.Begin(db, session.Owner, session.Project, input.SessionId, input.RunId, input.Prompt);
+                }
+                catch (AiConversations.UnavailableException) { session.RunLock.Release(); return Results.NotFound(); }
+                catch (AiConversations.BusyException) { session.RunLock.Release(); return Results.Json(new { error = "这个对话已有任务正在执行，或该任务已经提交，请查看历史记录。" }, statusCode: 409); }
+                catch { session.RunLock.Release(); throw; }
+                var run = new AgentRun(input.RunId, input.Prompt, input.SessionId, history);
                 session.Run = run;
                 // Only singleton services and immutable request values are captured, never HttpContext.
-                _ = ExecuteRun(session, run, url, secret, clients, lifetime.ApplicationStopping);
+                _ = ExecuteRun(session, run, url, secret, clients, db, logger, lifetime.ApplicationStopping);
                 return Results.Json(Volatile.Read(ref run.Snapshot), statusCode: 202);
             }
         });
