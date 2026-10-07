@@ -99,7 +99,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 作品发布与打包
 
-Docker 打包器固定为 `41708b6c756d530a1c71f0e0ef2539a1df1bb03e`，输出 TCPAK v8。前端当前使用 `bb692873`；后端接受 `41708b6c`、`053fcce4`、`2ee941e6`、`bb692873` 四个格式兼容的提交，其余版本仍拒绝。后三个提交仅调整编辑器行为，现有项目可直接打开和保存，历史修订保持原样。Linux 容器仍使用 Node 驱动 Emscripten Web Player，不运行 Windows CLI 或原生 DLL 模块。
+Docker 打包器固定为 `41708b6c756d530a1c71f0e0ef2539a1df1bb03e`，输出 TCPAK v8。前端当前使用 `331d1e0b`；后端接受 `41708b6c`、`053fcce4`、`2ee941e6`、`bb692873`、`331d1e0b` 五个格式兼容的提交，其余版本仍拒绝。后四个提交仅调整编辑器行为，现有项目可直接打开和保存，历史修订保持原样。Linux 容器仍使用 Node 驱动 Emscripten Web Player，不运行 Windows CLI 或原生 DLL 模块。
 
 发布把项目最新一次云端保存的修订交给已配置的打包器打包为 TCPAK，产出对游客公开的游戏包。容器镜像内置引擎自带的 Emscripten 打包器（见下「服务端打包」），因此 linux-x64 部署不再依赖 Windows 桌面 CLI。发布前会先把 Redis 待落库快照固化为正式修订（基线冲突返回 409）；同一项目同时只允许一个进行中的发布任务（409），失败会记录原因并可在排除问题后重新发布。取消发布或删除项目会立即移除公开入口（删除项目经外键级联）。CookWorker 为单实例设计：同一时刻只打包一个任务，进程重启后未完成任务自动重试。
 
@@ -253,3 +253,5 @@ Mail__From=TomCat <noreply@你已验证的域名>
 - `POST /v1/auth/change-password`（已登录）：`{ currentPassword, newPassword }`。
 
 迁移 `005_password_recovery.sql` 保留原用户与项目，增加会话版本及独立找回密码挑战表。改密/重置密码后旧设备 Cookie 在后续请求时失效，需重新登录；已有会话没有版本标记时按版本 0 兼容。所有未完成的找回密码挑战和该账号的邮箱绑定挑战同时失效。无已验证邮箱的旧账号无法登录或使用邮箱找回。
+
+编辑器会话现在允许 7 个 Web C# 工具：script_get_api、script_list、script_read、script_write、script_compile、script_attach、script_detach。写入版本验证由浏览器引擎边界完成，后端继续限制项目所有者、会话凭证、工具白名单和请求去重。script_compile / editor_play 单次等待上限 120 秒；任务状态查询维持浏览器心跳，避免编译阻塞命令轮询时误判离线。

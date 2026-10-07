@@ -47,7 +47,8 @@ public sealed class EditorSessions
     private readonly ConcurrentDictionary<string, Session> sessions = new();
     public static readonly HashSet<string> Tools = ["editor_get_status", "scene_get_tree", "entity_get", "component_get_schema",
         "entity_create", "entity_delete", "entity_reparent", "component_add", "component_remove", "component_set",
-        "editor_play", "editor_pause", "editor_stop", "history_undo", "history_redo", "project_get_sync_status"];
+        "editor_play", "editor_pause", "editor_stop", "history_undo", "history_redo", "project_get_sync_status",
+        "script_get_api", "script_list", "script_read", "script_write", "script_compile", "script_attach", "script_detach"];
 
     private Session? Find(string id, Database db)
     {
@@ -212,7 +213,12 @@ public sealed class EditorSessions
             var session = broker.Browser(id, context, db);
             if (session is null) return Results.NotFound();
             lock (session.AgentGate)
-                return session.Run is { } run && run.Snapshot.RunId == runId ? Results.Ok(Volatile.Read(ref run.Snapshot)) : Results.NotFound();
+            {
+                if (session.Run is not { } run || run.Snapshot.RunId != runId) return Results.NotFound();
+                // A browser waiting on a long compile is alive even while its command poll is occupied.
+                session.LastPoll = DateTimeOffset.UtcNow;
+                return Results.Ok(Volatile.Read(ref run.Snapshot));
+            }
         });
 
         // Kept for older open tabs. New clients use the short asynchronous requests above.
@@ -283,7 +289,7 @@ public sealed class EditorSessions
                 }
             }
             using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, session.Closed.Token);
-            cancellation.CancelAfter(TimeSpan.FromSeconds(30));
+            cancellation.CancelAfter(TimeSpan.FromSeconds(input.Name is "script_compile" or "editor_play" ? 120 : 30));
             try { return Results.Json(await command.Result.Task.WaitAsync(cancellation.Token)); }
             catch (OperationCanceledException)
             {
