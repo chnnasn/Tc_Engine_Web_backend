@@ -245,6 +245,17 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
     })
 
+    await t.test('viewport-only engine update can save an existing project without discarding history', async () => {
+      const previous = fullRevision.revisionId
+      const oldManifest = manifest
+      manifest = { ...manifest, engineCommit: '053fcce44c36ef94c4bd4a3750da7eb4e75d0303' }
+      const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: manifest, headers: { 'If-Match': current.etag } })
+      assert.equal(response.status, 201)
+      fullRevision = await response.json()
+      current = await (await request(`/v1/projects/${project.id}`)).json()
+      assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${previous}`)).json(), oldManifest)
+    })
+
     await t.test('database and session survive service restart', async () => {
       await api.stop()
       api = await start(directory)
