@@ -10,11 +10,21 @@ import { join, resolve } from 'node:path'
 test('editor leases enforce ownership, request identity, result binding and revocation', { timeout: 60000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'tomcat-editor-test-'))
   let child, token
+  const calls = []
+  let cancelled = false
   const secret = 'test-service-secret-01234567890123456789'
   const agent = createServer(async (req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${secret}`)
     let body = ''; for await (const chunk of req) body += chunk
-    token = JSON.parse(body).sessionToken
+    const input = JSON.parse(body)
+    token = input.sessionToken
+    calls.push(input.prompt)
+    if (input.prompt === 'slow') await new Promise(ok => setTimeout(ok, 28000))
+    if (input.prompt === 'cancel') {
+      await new Promise(ok => res.once('close', () => { cancelled = true; ok() }))
+      return
+    }
+    if (input.prompt === 'fail') { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end('{"error":"model unavailable"}'); return }
     res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"output":"test"}')
   })
   await new Promise(ok => agent.listen(0, '127.0.0.1', ok))
@@ -68,6 +78,48 @@ test('editor leases enforce ownership, request identity, result binding and revo
     assert.equal((await request(root, 'DELETE')).status, 204)
     assert.equal((await internal(body)).status, 401)
     assert.equal((await request(root + '/commands')).status, 404)
+
+    const newRoot = async () => `/v1/editor-sessions/${(await (await request('/v1/editor-sessions/', 'POST', registration)).json()).editorSessionId}`
+    const waitFor = async (check, timeout = 35000) => {
+      const deadline = Date.now() + timeout
+      while (Date.now() < deadline) { const value = await check(); if (value) return value; await new Promise(ok => setTimeout(ok, 100)) }
+      throw new Error('Timed out waiting for async task')
+    }
+    const asyncRoot = await newRoot()
+    const run = { runId: 'checkpoint-run-1', prompt: 'slow' }
+    const started = Date.now()
+    const accepted = await request(asyncRoot + '/agent-runs', 'POST', run)
+    assert.equal(accepted.status, 202)
+    assert.ok(Date.now() - started < 2000, 'submission must not wait for the model')
+    assert.equal((await accepted.json()).state, 'running')
+    const statusPath = asyncRoot + '/agent-runs/' + run.runId
+    assert.equal((await request(statusPath, 'GET', undefined, 'bob')).status, 404)
+    assert.equal((await request(asyncRoot + '/agent-runs', 'POST', run, 'bob')).status, 404)
+    assert.equal((await request(asyncRoot + '/agent-runs', 'POST', run)).status, 202)
+    assert.equal((await request(asyncRoot + '/agent-runs', 'POST', { ...run, prompt: 'changed' })).status, 409)
+    assert.equal((await request(asyncRoot + '/agent-runs', 'POST', { ...run, runId: 'different' })).status, 409)
+    assert.equal((await request(asyncRoot + '/agent', 'POST', { prompt: 'legacy bypass' })).status, 409)
+    const completed = await waitFor(async () => { const value = await (await request(statusPath)).json(); assert.equal(value.sessionToken, undefined); return value.state === 'succeeded' && value })
+    assert.ok(Date.now() - started >= 27000, 'task survives the CDN 26-second request limit')
+    assert.equal(completed.output, 'test')
+    assert.equal(calls.filter(p => p === 'slow').length, 1, 'repeated submissions cannot duplicate model or editor work')
+    assert.equal((await request(asyncRoot + '/agent-runs', 'POST', run)).status, 202)
+    assert.equal((await request(asyncRoot, 'DELETE')).status, 204)
+
+    const failedRoot = await newRoot()
+    assert.equal((await request(failedRoot + '/agent-runs', 'POST', { runId: 'failure', prompt: 'fail' })).status, 202)
+    const failed = await waitFor(async () => { const value = await (await request(failedRoot + '/agent-runs/failure')).json(); return value.state === 'failed' && value })
+    assert.equal(failed.error, 'model unavailable')
+    assert.equal((await request('/internal/editor-session', 'GET', undefined, 'anonymous', { Authorization: `Bearer ${token}` })).status, 401)
+    await request(failedRoot, 'DELETE')
+
+    const cancelledRoot = await newRoot()
+    assert.equal((await request(cancelledRoot + '/agent-runs', 'POST', { runId: 'cancel-run', prompt: 'cancel' })).status, 202)
+    await waitFor(() => calls.includes('cancel'))
+    assert.equal((await request(cancelledRoot, 'DELETE')).status, 204)
+    await waitFor(() => cancelled)
+    assert.equal((await request(cancelledRoot + '/agent-runs/cancel-run')).status, 404)
+    assert.equal((await request('/internal/editor-session', 'GET', undefined, 'anonymous', { Authorization: `Bearer ${token}` })).status, 401)
   } finally {
     if (child?.exitCode === null) await new Promise(ok => { child.once('exit', ok); child.kill() })
     await new Promise(ok => agent.close(ok))

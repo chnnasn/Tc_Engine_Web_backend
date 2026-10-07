@@ -4,9 +4,9 @@
 
 新增 `EditorSessions.cs`，为相邻 `Tc_Engine_Web_Mcp` 的 LangChain Agent 提供按账号、云端项目和浏览器会话隔离的命令通道。设置 `Agent__Url` 和至少 32 字符的 `Agent__Secret`（与 Python 的 `TOMCAT_AGENT_SECRET` 一致）后，前端可通过 AI 面板执行。
 
-`POST /v1/editor-sessions/` 注册；`GET /{id}/commands` 长轮询；`POST /{id}/commands/{commandId}/result` 回传；`POST /{id}/agent` 运行 Agent；`DELETE /{id}` 撤销。所有这些路径都在 `/v1/editor-sessions` 下且要求现有登录；写请求继续要求 X-TomCat-Request。项目所有权在访问时核对。
+`POST /v1/editor-sessions/` 注册；`GET /{id}/commands` 长轮询；`POST /{id}/commands/{commandId}/result` 回传；`POST /{id}/agent-runs` 提交 `{ runId, prompt }` 并立即返回 202；`GET /{id}/agent-runs/{runId}` 查询 `running / succeeded / failed` 与结果；`DELETE /{id}` 撤销。所有这些路径都在 `/v1/editor-sessions` 下且要求现有登录；写请求继续要求 X-TomCat-Request。项目所有权在访问时核对。
 
-`/internal/editor-session` 和 `/internal/editor-session/call` 只接受后端签发的随机会话 Bearer 凭证，拒绝 Origin；应限制私网访问。凭证不返回浏览器。命令结果在进程内去重，未知重试 ID 拒绝，重启使会话失效；单副本运行。Agent 最长请求约 190 秒，部署代理需允许该超时。运行 `node --test tests/*.test.mjs` 包含会话权限、结果绑定、去重、撤销测试。
+`/internal/editor-session` 和 `/internal/editor-session/call` 只接受后端签发的随机会话 Bearer 凭证，拒绝 Origin；应限制私网访问。凭证不返回浏览器。命令结果在进程内去重，未知重试 ID 拒绝，重启使会话失效；单副本运行。Agent 在后端后台执行，最长约 190 秒；浏览器每秒查询一次状态，命令长轮询最多 20 秒，适配 Netlify 26 秒代理限制。相同会话的相同 runId 与 prompt 重复提交返回原任务，其他提交返回 409；runId 与前端检查点一致。任务状态保存在进程内，重启不续跑。停止、删除会话、应用退出或编辑器超过 45 秒未轮询时取消模型请求；失败或超时撤销委托凭证，已执行编辑不自动回滚。旧 `/agent` 同步接口仅为已打开的旧页面保留。运行 `node --test tests/*.test.mjs` 包含会话权限、结果绑定、去重、撤销测试。
 
 本仓库由 `Tc_Engine_Web_Front` 的 `codex/aspnet-sqlite` 分支迁移而来。使用 .NET 10 和 Microsoft.Data.Sqlite，SQL 参数化，启动时在事务中按 `PRAGMA user_version` 依次应用 `Migrations/001_initial.sql` 和 `002_uploads.sql`，保留已有修订。SQLite 使用 WAL 和外键约束。
 

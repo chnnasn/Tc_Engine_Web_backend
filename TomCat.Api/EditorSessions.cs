@@ -32,6 +32,16 @@ public sealed class EditorSessions
         public SemaphoreSlim RunLock { get; } = new(1);
         public SemaphoreSlim PollLock { get; } = new(1);
         public CancellationTokenSource Closed { get; } = new();
+        public object AgentGate { get; } = new();
+        public AgentRun? Run { get; set; }
+        public volatile bool DelegationRevoked;
+    }
+
+    public sealed record RunSnapshot(string RunId, string State, string? Output = null, string? Error = null);
+    public sealed class AgentRun(string id, string prompt)
+    {
+        public string Prompt { get; } = prompt;
+        public RunSnapshot Snapshot = new(id, "running");
     }
 
     private readonly ConcurrentDictionary<string, Session> sessions = new();
@@ -69,12 +79,59 @@ public sealed class EditorSessions
         if (!auth.StartsWith("Bearer ", StringComparison.Ordinal)) return null;
         var token = auth[7..];
         var session = sessions.Values.FirstOrDefault(s => s.Token == token);
-        return session is null ? null : Find(session.Id, db);
+        return session is null || session.DelegationRevoked ? null : Find(session.Id, db);
     }
 
     public sealed record Registration(string ProjectId, string EngineCommit);
     public sealed record ToolCall(string RequestId, string Name, JsonElement Arguments, bool IsRetry = false);
     public sealed record AgentInput(string Prompt);
+    public sealed record StartRunInput(string RunId, string Prompt);
+
+    private static async Task ExecuteRun(Session session, AgentRun run, Uri endpoint, string secret,
+        IHttpClientFactory clients, CancellationToken stopping)
+    {
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(session.Closed.Token, stopping);
+        cancellation.CancelAfter(TimeSpan.FromSeconds(190));
+        var runId = run.Snapshot.RunId;
+        try
+        {
+            using var client = clients.CreateClient("agent");
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint, "/agent/run"));
+            request.Headers.Authorization = new("Bearer", secret);
+            request.Content = JsonContent.Create(new { prompt = run.Prompt, sessionToken = session.Token });
+            var pending = client.SendAsync(request, cancellation.Token);
+            // A closed/crashed tab may never send DELETE. Stop when its command polling disappears.
+            while (!pending.IsCompleted)
+            {
+                await Task.WhenAny(pending, Task.Delay(TimeSpan.FromSeconds(5), cancellation.Token));
+                if (session.LastPoll < DateTimeOffset.UtcNow.AddSeconds(-45) || session.Expires < DateTimeOffset.UtcNow)
+                    cancellation.Cancel();
+                if (cancellation.IsCancellationRequested) break;
+            }
+            using var response = await pending;
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellation.Token));
+            if (response.IsSuccessStatusCode && body.RootElement.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.String)
+                Volatile.Write(ref run.Snapshot, new(runId, "succeeded", output.GetString()));
+            else
+            {
+                session.DelegationRevoked = true;
+                var error = body.RootElement.TryGetProperty("error", out var message) && message.ValueKind == JsonValueKind.String
+                    ? message.GetString() : "AI 执行失败，请检查模型配置和当前场景。";
+                Volatile.Write(ref run.Snapshot, new(runId, "failed", Error: error));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            session.DelegationRevoked = true;
+            Volatile.Write(ref run.Snapshot, new(runId, "failed", Error: "任务已停止或超时，请检查场景后重新连接。已执行的修改会保留。"));
+        }
+        catch (Exception)
+        {
+            session.DelegationRevoked = true;
+            Volatile.Write(ref run.Snapshot, new(runId, "failed", Error: "Agent 连接或响应异常，请检查场景后重新连接。已执行的修改会保留。"));
+        }
+        finally { session.RunLock.Release(); }
+    }
 
     public static void Map(WebApplication app)
     {
@@ -127,6 +184,38 @@ public sealed class EditorSessions
             }
             return Results.NoContent();
         });
+        routes.MapPost("/{id}/agent-runs", (string id, StartRunInput input, EditorSessions broker, HttpContext context, Database db,
+            IConfiguration config, IHttpClientFactory clients, IHostApplicationLifetime lifetime) =>
+        {
+            var session = broker.Browser(id, context, db);
+            if (session is null) return Results.NotFound();
+            if (string.IsNullOrWhiteSpace(input.Prompt) || input.Prompt.Length > 8000 || input.RunId is null ||
+                !System.Text.RegularExpressions.Regex.IsMatch(input.RunId, "^[a-zA-Z0-9_-]{1,64}$")) return Results.BadRequest();
+            var secret = config["Agent:Secret"];
+            if (!Uri.TryCreate(config["Agent:Url"], UriKind.Absolute, out var url) || url.Scheme is not ("http" or "https") || string.IsNullOrEmpty(secret) || secret.Length < 32)
+                return Results.Json(new { error = "尚未配置 LangChain Agent 服务。" }, statusCode: 503);
+            lock (session.AgentGate)
+            {
+                if (session.Run is { } previous)
+                    return previous.Snapshot.RunId == input.RunId && previous.Prompt == input.Prompt
+                        ? Results.Json(Volatile.Read(ref previous.Snapshot), statusCode: 202) : Results.Conflict();
+                if (session.Closed.IsCancellationRequested || !session.RunLock.Wait(0)) return Results.Conflict();
+                var run = new AgentRun(input.RunId, input.Prompt);
+                session.Run = run;
+                // Only singleton services and immutable request values are captured, never HttpContext.
+                _ = ExecuteRun(session, run, url, secret, clients, lifetime.ApplicationStopping);
+                return Results.Json(Volatile.Read(ref run.Snapshot), statusCode: 202);
+            }
+        });
+        routes.MapGet("/{id}/agent-runs/{runId}", (string id, string runId, EditorSessions broker, HttpContext context, Database db) =>
+        {
+            var session = broker.Browser(id, context, db);
+            if (session is null) return Results.NotFound();
+            lock (session.AgentGate)
+                return session.Run is { } run && run.Snapshot.RunId == runId ? Results.Ok(Volatile.Read(ref run.Snapshot)) : Results.NotFound();
+        });
+
+        // Kept for older open tabs. New clients use the short asynchronous requests above.
         routes.MapPost("/{id}/agent", async (string id, AgentInput input, EditorSessions broker, HttpContext context, Database db, IConfiguration config, IHttpClientFactory clients) =>
         {
             var session = broker.Browser(id, context, db);
@@ -136,7 +225,8 @@ public sealed class EditorSessions
             var secret = config["Agent:Secret"];
             if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var url) || url.Scheme is not ("http" or "https") || string.IsNullOrEmpty(secret) || secret.Length < 32)
                 return Results.Json(new { error = "尚未配置 LangChain Agent 服务。" }, statusCode: 503);
-            if (!await session.RunLock.WaitAsync(0)) return Results.Conflict();
+            lock (session.AgentGate)
+                if (session.Run is not null || !session.RunLock.Wait(0)) return Results.Conflict();
             using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, session.Closed.Token);
             cancellation.CancelAfter(TimeSpan.FromSeconds(190));
             try
