@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { mailedCode } from './email-helper.mjs'
 
-test('email verification, token replay, expiry, legacy binding and ownership preservation', async () => {
+test('email verification, token replay, expiry, email-only identity and legacy login rejection', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'tomcat-email-'))
   const child = spawn('dotnet', [resolve('TomCat.Api/bin/Release/net10.0/TomCat.Api.dll'), '--urls', 'http://127.0.0.1:0'], {
     cwd: resolve('TomCat.Api'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
@@ -40,24 +40,18 @@ test('email verification, token replay, expiry, legacy binding and ownership pre
     assert.equal(verified.headers.get('set-cookie'), null)
     const { token } = await verified.json()
     assert.equal((await post('verify-email', { challengeId, code })).status, 400)
-    assert.equal((await post('complete-registration', { token, username: 'bad name' })).status, 400)
-    const completed = await post('complete-registration', { token, username: 'creator' }); assert.equal(completed.status, 200)
-    assert.equal((await completed.json()).emailVerified, true)
-    assert.equal((await post('complete-registration', { token, username: 'replay' })).status, 400)
+    assert.equal((await post('complete-registration', { token: 'invalid' })).status, 400)
+    const completed = await post('complete-registration', { token }); assert.equal(completed.status, 200)
+    const registered = await completed.json(); assert.equal(registered.emailVerified, true); assert.equal(registered.email, email); assert.equal('username' in registered, false)
+    assert.equal((await post('complete-registration', { token })).status, 400)
     assert.equal((await post('login', { email: 'creator', password }, '')).status, 401)
     assert.equal((await post('login', { email: 'NEW@example.com', password }, '')).status, 200)
-    // An existing account retains its identifier and projects when binding email.
-    db.exec("INSERT INTO users(id,username,password_hash,created_at) SELECT 'legacy-id','legacy',password_hash,created_at FROM users LIMIT 1; INSERT INTO projects(id,owner_id,name,description,template,created_at,updated_at) VALUES('legacy-project','legacy-id','old','','2D','before','before');")
-    assert.equal((await post('login', { username: 'legacy', password }, '')).status, 200)
-    const binding = await post('bind-email', { email: 'legacy@example.com' }); assert.equal(binding.status, 200)
-    const challenge = (await binding.json()).challengeId
-    const boundVerify = await post('verify-email', { challengeId: challenge, code: await mailedCode(directory, 'legacy@example.com') }); assert.equal(boundVerify.status, 200)
-    const bindToken = (await boundVerify.json()).token
-    assert.equal((await post('complete-registration', { token: bindToken, username: 'legacy' }, '')).status, 401)
-    const bound = await post('complete-registration', { token: bindToken, username: 'legacy' }); assert.equal(bound.status, 200)
-    assert.equal((await bound.json()).id, 'legacy-id')
-    assert.equal(db.prepare("SELECT owner_id FROM projects WHERE id='legacy-project'").get().owner_id, 'legacy-id')
-    assert.equal((await post('login', { email: 'legacy@example.com', password }, '')).status, 200)
+    // Username-only accounts and the previous username request field cannot authenticate.
+    db.exec("INSERT INTO users(id,username,password_hash,created_at) SELECT 'legacy-id','legacy',password_hash,created_at FROM users LIMIT 1;")
+    assert.equal((await post('login', { username: 'legacy', password }, '')).status, 401)
+    assert.equal((await post('login', { email: 'legacy', password }, '')).status, 401)
+    assert.equal((await post('login', { username: email, password }, '')).status, 401)
+    assert.equal((await post('bind-email', { email: 'legacy@example.com' })).status, 404)
     const expiring = await post('register', { email: 'expired@example.com', password }); const expired = (await expiring.json()).challengeId
     db.prepare('UPDATE email_challenges SET expires_at=0 WHERE id=?').run(expired)
     assert.equal((await post('verify-email', { challengeId: expired, code: await mailedCode(directory, 'expired@example.com') })).status, 400)

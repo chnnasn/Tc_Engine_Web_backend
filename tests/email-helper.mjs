@@ -21,5 +21,5 @@ export async function emailRegister(post, directory, username, password) {
   const { challengeId } = await sent.json()
   const verified = await post('/auth/verify-email', { challengeId, code: await mailedCode(directory, email) }); assert.equal(verified.status, 200)
   const { token } = await verified.json()
-  return post('/auth/complete-registration', { token, username })
+  return post('/auth/complete-registration', { token })
 }

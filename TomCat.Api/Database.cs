@@ -47,24 +47,6 @@ public sealed class Database(string directory)
         return command;
     }
 
-    public UserRow? FindUser(string username)
-    {
-        using var connection = Open();
-        using var command = Command(connection,
-            "SELECT id, username, password_hash FROM users WHERE username = $name;", null, ("$name", username));
-        using var reader = command.ExecuteReader();
-        return reader.Read() ? new(reader.GetString(0), reader.GetString(1), reader.GetString(2)) : null;
-    }
-
-    public void CreateUser(UserRow user)
-    {
-        using var connection = Open();
-        using var command = Command(connection,
-            "INSERT INTO users(id, username, password_hash, created_at) VALUES ($id, $name, $hash, $now);", null,
-            ("$id", user.Id), ("$name", user.Username), ("$hash", user.PasswordHash), ("$now", Now()));
-        command.ExecuteNonQuery();
-    }
-
     public static string Now() => DateTimeOffset.UtcNow.ToString("O");
     public static string Id() => Guid.NewGuid().ToString("N");
 

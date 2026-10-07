@@ -58,8 +58,8 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
 | GET | `/health` | 进程健康检查 |
-| POST | `/v1/auth/register` | `{ email, password }` 发送邮箱验证码；验证后设置用户名完成注册 |
-| POST | `/v1/auth/login` | `{ email, password }` 登录；未绑定邮箱的旧账号支持原用户名 |
+| POST | `/v1/auth/register` | `{ email, password }` 发送邮箱验证码；验证后直接完成注册 |
+| POST | `/v1/auth/login` | `{ email, password }` 登录，仅接受已验证邮箱 |
 | POST | `/v1/auth/logout` | 清除当前浏览器登录 Cookie |
 | GET | `/v1/auth/me` | 当前用户 |
 | GET / POST | `/v1/projects` | 列出自己的项目 / 创建项目 |
@@ -71,7 +71,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 | GET | `/v1/games/published/{id}` | 公开作品详情（游客可访问） |
 | GET | `/v1/games/published/{id}/package` | 公开游戏包下载，ETag 为内容 SHA-256（游客可访问） |
 
-用户名允许 3–32 个字母、数字或下划线，不区分大小写；密码 12–128 字符。创建项目使用 `{ name, description, template }`，模板为 `2D` 或 `空白`。PUT 更新名称和描述，模板创建后固定。一般请求体上限 16 MiB，单个资源上传上限 8 MiB。
+邮箱为唯一登录标识，不区分大小写；密码 12–128 字符。创建项目使用 `{ name, description, template }`，模板为 `2D` 或 `空白`。PUT 更新名称和描述，模板创建后固定。一般请求体上限 16 MiB，单个资源上传上限 8 MiB。
 
 完整保存使用前端 `src/engine/cloud.ts` 的 schemaVersion 2 契约。首次修订要求 `If-None-Match: *`，随后发送上次返回的 `If-Match: "revisionId"`。缺少条件返回 428，过期条件返回 412；客户端必须保留旧凭据和本地草稿，不得自动覆盖。
 
@@ -202,9 +202,9 @@ Redis 集成测试使用临时 Redis、临时 SQLite 和测试账号，覆盖权
 
 ## 邮箱注册与旧账号绑定
 
-新用户流程：邮箱和密码 → 六位邮件验证码 → 设置用户名 → 登录。邮箱作为登录标识，用户名作为展示名称（仍保持唯一）。验证码十分钟有效，最多五次错误尝试；同一邮箱重发间隔至少六十秒。验证码和注册完成令牌只保存 SHA-256 哈希，完成令牌十分钟有效且只可使用一次。邮箱验证前不创建账号、不签发登录 Cookie。
+新用户流程：邮箱和密码 → 六位邮件验证码 → 自动完成注册并登录。接口不接收展示用户名，用户资料仅返回 ID、邮箱及验证状态。验证码十分钟有效，最多五次错误尝试；同一邮箱重发间隔至少六十秒。验证码和注册完成令牌只保存 SHA-256 哈希，完成令牌十分钟有效且只可使用一次。邮箱验证前不创建账号、不签发登录 Cookie。
 
-已有账号：未绑定邮箱时仍可用原用户名和密码登录，在账号弹窗点击“绑定邮箱”。验证后保留原用户 ID、用户名、密码、项目和修订，以后用邮箱登录。数据库新增 `004_email_auth.sql` 自动迁移，不删除既有数据。
+已有已验证邮箱的账号使用原邮箱、密码和 ID，项目归属不变。移除用户名登录与 bind-email 接口；无已验证邮箱的旧账号无法登录，旧会话也会被拒绝。数据库历史 username 列保留以避免重建用户及项目外键，新注册时填充随机用户 ID，仅作内部字段，不作为登录或展示信息。
 
 Railway 发信变量（需自行申请 SMTP 服务）：
 
@@ -222,13 +222,12 @@ Mail__Password=your-smtp-password
 
 认证接口：
 - `POST /v1/auth/register`：`{ email, password }` → `{ challengeId, expiresIn, resendAfter }`
-- `POST /v1/auth/verify-email`：`{ challengeId, code }` → `{ token, binding }`
-- `POST /v1/auth/complete-registration`：`{ token, username }` → 用户资料及会话 Cookie
-- `POST /v1/auth/bind-email`（已登录）：`{ email }` → 验证挑战，后续复用上述验证与完成接口
-- `POST /v1/auth/login`：`{ email, password }`；尚未绑定邮箱的旧账号仍支持 `{ username, password }`
-- `GET /v1/auth/me`：`{ id, username, email, emailVerified }`
+- `POST /v1/auth/verify-email`：`{ challengeId, code }` → `{ token }`
+- `POST /v1/auth/complete-registration`：`{ token }` → 用户资料及会话 Cookie
+- `POST /v1/auth/login`：`{ email, password }`；仅接受已验证邮箱
+- `GET /v1/auth/me`：`{ id, email, emailVerified }`
 
-所有写请求仍需要 `X-TomCat-Request: 1`。绑定完成必须使用发起绑定的原用户会话。
+所有写请求仍需要 `X-TomCat-Request: 1`。完成注册使用一次性邮箱验证令牌。
 
 验证：`dotnet build TomCat.Api -c Release`，然后 `node --test tests/*.test.mjs`。测试使用开发邮件目录读取真实邮件内容，不提供获取验证码的 HTTP 接口。
 
@@ -253,4 +252,4 @@ Mail__From=TomCat <noreply@你已验证的域名>
 - `POST /v1/auth/reset-password`：`{ challengeId, code, newPassword }`。验证码十分钟有效，最多五次错误尝试；使用后即删除，不能复用注册验证码。
 - `POST /v1/auth/change-password`（已登录）：`{ currentPassword, newPassword }`。
 
-迁移 `005_password_recovery.sql` 保留原用户与项目，增加会话版本及独立找回密码挑战表。改密/重置密码后旧设备 Cookie 在后续请求时失效，需重新登录；已有会话没有版本标记时按版本 0 兼容。所有未完成的找回密码挑战和该账号的邮箱绑定挑战同时失效。尚未绑定邮箱的旧账号无法通过邮箱找回，需先登录绑定。
+迁移 `005_password_recovery.sql` 保留原用户与项目，增加会话版本及独立找回密码挑战表。改密/重置密码后旧设备 Cookie 在后续请求时失效，需重新登录；已有会话没有版本标记时按版本 0 兼容。所有未完成的找回密码挑战和该账号的邮箱绑定挑战同时失效。无已验证邮箱的旧账号无法登录或使用邮箱找回。
