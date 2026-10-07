@@ -27,7 +27,7 @@ public static class ProjectFiles
         if (payload.TryGetProperty("aiCheckpoint", out _) && AiCheckpoint.Read(payload) is null) return false;
         if (!payload.TryGetProperty("engineCommit", out var commit) || commit.ValueKind != JsonValueKind.String ||
             // The desktop viewport update keeps scene/project formats and managed ABI unchanged.
-            commit.GetString() is not ("41708b6c756d530a1c71f0e0ef2539a1df1bb03e" or "053fcce44c36ef94c4bd4a3750da7eb4e75d0303") ||
+            commit.GetString() is not ("41708b6c756d530a1c71f0e0ef2539a1df1bb03e" or "053fcce44c36ef94c4bd4a3750da7eb4e75d0303" or "2ee941e6ad50e5797ec91bbfb90d0d29a0ece30e") ||
             !payload.TryGetProperty("sceneHandle", out var scene) || scene.ValueKind != JsonValueKind.String ||
             !Regex.IsMatch(scene.GetString()!, "^[1-9][0-9]*$") || !ulong.TryParse(scene.GetString(), out _) ||
             !payload.TryGetProperty("archive", out var archive) || archive.ValueKind != JsonValueKind.String ||
