@@ -269,3 +269,5 @@ Mail__From=TomCat <noreply@你已验证的域名>
 迁移 `005_password_recovery.sql` 保留原用户与项目，增加会话版本及独立找回密码挑战表。改密/重置密码后旧设备 Cookie 在后续请求时失效，需重新登录；已有会话没有版本标记时按版本 0 兼容。所有未完成的找回密码挑战和该账号的邮箱绑定挑战同时失效。无已验证邮箱的旧账号无法登录或使用邮箱找回。
 
 编辑器会话现在允许 7 个 Web C# 工具：script_get_api、script_list、script_read、script_write、script_compile、script_attach、script_detach。写入版本验证由浏览器引擎边界完成，后端继续限制项目所有者、会话凭证、工具白名单和请求去重。script_compile / editor_play 单次等待上限 120 秒；任务状态查询维持浏览器心跳，避免编译阻塞命令轮询时误判离线。
+
+Web Project 文件管理更新：接受 `5feb6666d531864fb22daaadc0aa9bc12b241f84`，场景/项目格式与已有版本相同。完整修订可附带 `directories` 保存空文件夹；资源路径允许中文及内部空格，仍拒绝目录穿越、文件/目录冲突和超限路径。

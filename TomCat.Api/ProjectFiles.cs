@@ -19,7 +19,7 @@ public static class ProjectFiles
         if (path == "Project.tcproj") return true;
         if (Regex.IsMatch(path, "^ProjectSettings/[A-Za-z0-9_-]+\\.json$")) return true;
         return path.Length <= 240 && path.StartsWith("Assets/", StringComparison.Ordinal) &&
-            path.Split('/').All(part => Regex.IsMatch(part, "^[A-Za-z0-9][A-Za-z0-9_.-]*$") && !part.EndsWith('.'));
+            path.Split('/').All(part => Regex.IsMatch(part, @"^[\p{L}\p{N}_][\p{L}\p{N}\p{M}_. -]*$") && !part.EndsWith('.') && !part.EndsWith(' '));
     }
     public static bool TryManifest(JsonElement payload, out List<RevisionFile> files)
     {
@@ -27,7 +27,7 @@ public static class ProjectFiles
         if (payload.TryGetProperty("aiCheckpoint", out _) && AiCheckpoint.Read(payload) is null) return false;
         if (!payload.TryGetProperty("engineCommit", out var commit) || commit.ValueKind != JsonValueKind.String ||
             // The desktop viewport update keeps scene/project formats and managed ABI unchanged.
-            commit.GetString() is not ("41708b6c756d530a1c71f0e0ef2539a1df1bb03e" or "053fcce44c36ef94c4bd4a3750da7eb4e75d0303" or "2ee941e6ad50e5797ec91bbfb90d0d29a0ece30e" or "bb692873f48ec3eff092b1991c693224e5613b4e" or "331d1e0b15edc202a375e9568b5cefea5821e18c") ||
+            commit.GetString() is not ("41708b6c756d530a1c71f0e0ef2539a1df1bb03e" or "053fcce44c36ef94c4bd4a3750da7eb4e75d0303" or "2ee941e6ad50e5797ec91bbfb90d0d29a0ece30e" or "bb692873f48ec3eff092b1991c693224e5613b4e" or "331d1e0b15edc202a375e9568b5cefea5821e18c" or "5feb6666d531864fb22daaadc0aa9bc12b241f84") ||
             !payload.TryGetProperty("sceneHandle", out var scene) || scene.ValueKind != JsonValueKind.String ||
             !Regex.IsMatch(scene.GetString()!, "^[1-9][0-9]*$") || !ulong.TryParse(scene.GetString(), out _) ||
             !payload.TryGetProperty("archive", out var archive) || archive.ValueKind != JsonValueKind.String ||
@@ -44,6 +44,26 @@ public static class ProjectFiles
                 !entry.TryGetProperty("size", out var size) || size.ValueKind != JsonValueKind.Number || !size.TryGetInt64(out var length) || length is < 0 or > MaxUpload) return false;
             total += length;
             files.Add(new(path.GetString()!, id.GetString()!, hash.GetString()!, length));
+        }
+        if (payload.TryGetProperty("directories", out var directories))
+        {
+            if (directories.ValueKind != JsonValueKind.Array || directories.GetArrayLength() > 512) return false;
+            var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var value in directories.EnumerateArray())
+            {
+                if (value.ValueKind != JsonValueKind.String) return false;
+                var folder = value.GetString()!;
+                if (!folder.StartsWith("Assets/", StringComparison.Ordinal) || !SafePath(folder) || !folders.Add(folder) || paths.Contains(folder)) return false;
+            }
+            foreach (var path in paths.Concat(folders))
+            {
+                var ancestor = path;
+                while (ancestor.Contains('/'))
+                {
+                    ancestor = ancestor[..ancestor.LastIndexOf('/')];
+                    if (paths.Contains(ancestor)) return false;
+                }
+            }
         }
         if (total > MaxProject) return false;
         string[] required = ["Project.tcproj", "ProjectSettings/BuildSettings.json", "ProjectSettings/ProjectSettings.json", "ProjectSettings/PlayerSettings.json"];

@@ -246,7 +246,23 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
     })
 
-    for (const engineCommit of ['053fcce44c36ef94c4bd4a3750da7eb4e75d0303', '2ee941e6ad50e5797ec91bbfb90d0d29a0ece30e', 'bb692873f48ec3eff092b1991c693224e5613b4e', '331d1e0b15edc202a375e9568b5cefea5821e18c']) await t.test(`editor-only engine update ${engineCommit.slice(0, 8)} preserves project history`, async () => {
+    await t.test('Project folders and Unicode paths survive a revision; invalid folder paths are rejected', async () => {
+      const image = manifest.files.find(file => file.path.endsWith('.png')) ?? manifest.files[0]
+      const changed = { ...manifest, directories: ['Assets/空文件夹', 'Assets/New Folder'], files: [...manifest.files, { ...image, path: 'Assets/New Folder/资源.dat' }] }
+      for (const directories of [['Assets/../bad'], ['Assets/bad\\name'], [3], ['Assets/New Folder','Assets/new folder'], [manifest.files[0].path]]) {
+        const bad = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: { ...changed, directories }, headers: { 'If-Match': current.etag } })
+        assert.equal(bad.status, 400)
+      }
+      const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: changed, headers: { 'If-Match': current.etag } })
+      assert.equal(response.status, 201)
+      fullRevision = await response.json()
+      current = await (await request(`/v1/projects/${project.id}`)).json()
+      assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), changed)
+      fileBytes.set('Assets/New Folder/资源.dat',fileBytes.get(image.path))
+      manifest = changed
+    })
+
+    for (const engineCommit of ['053fcce44c36ef94c4bd4a3750da7eb4e75d0303', '2ee941e6ad50e5797ec91bbfb90d0d29a0ece30e', 'bb692873f48ec3eff092b1991c693224e5613b4e', '331d1e0b15edc202a375e9568b5cefea5821e18c', '5feb6666d531864fb22daaadc0aa9bc12b241f84']) await t.test(`editor-only engine update ${engineCommit.slice(0, 8)} preserves project history`, async () => {
       const previous = fullRevision.revisionId
       const oldManifest = manifest
       manifest = { ...manifest, engineCommit }
