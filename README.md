@@ -99,7 +99,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 作品发布与打包
 
-Docker 打包器固定为 `41708b6c756d530a1c71f0e0ef2539a1df1bb03e`，输出 TCPAK v8。前端当前使用 `331d1e0b`；后端接受 `41708b6c`、`053fcce4`、`2ee941e6`、`bb692873`、`331d1e0b` 五个格式兼容的提交，其余版本仍拒绝。后四个提交仅调整编辑器行为，现有项目可直接打开和保存，历史修订保持原样。Linux 容器仍使用 Node 驱动 Emscripten Web Player，不运行 Windows CLI 或原生 DLL 模块。
+Docker 打包器、C# API / 源生成器与前端统一固定为 `0b8829a864ff53ad0ad2c7ded56ef433325a836a`（上游 [PR #29](https://github.com/chnnasn/TomCat_Engine/pull/29)），使用 Managed API v6 和 TCPAK v8。脚本改用 MonoBehaviour 与同步无参 Awake/Update 等生命周期，并支持作用域任务和协程。新修订只接受该引擎提交；旧 API v5 项目及作品不再兼容，数据库历史修订保留。Linux 容器仍使用 Node 驱动 Emscripten Web Player，并用 .NET SDK 编译 C#，不运行 Windows CLI 或原生 DLL 模块。
 
 发布把项目最新一次云端保存的修订交给已配置的打包器打包为 TCPAK，产出对游客公开的游戏包。容器镜像内置引擎自带的 Emscripten 打包器（见下「服务端打包」），因此 linux-x64 部署不再依赖 Windows 桌面 CLI。发布前会先把 Redis 待落库快照固化为正式修订（基线冲突返回 409）；同一项目同时只允许一个进行中的发布任务（409），失败会记录原因并可在排除问题后重新发布。取消发布或删除项目会立即移除公开入口（删除项目经外键级联）。CookWorker 为单实例设计：同一时刻只打包一个任务，进程重启后未完成任务自动重试。
 

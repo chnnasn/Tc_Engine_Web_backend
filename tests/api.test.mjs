@@ -173,7 +173,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
         ['ProjectSettings/PlayerSettings.json', Buffer.from('{"width":1234}')],
         ['Assets/WebImports/pixel.tga', Buffer.from([0, 0, 2, 255])],
         ['Assets/WebImports/pixel.tga.tcmeta', Buffer.from('Handle: 18446744073709551615')],
-        ['Assets/Scripts/WebSmoke.cs', Buffer.from('public sealed class WebSmoke : TomCatBehaviour { }')],
+        ['Assets/Scripts/WebSmoke.cs', Buffer.from('public sealed class WebSmoke : MonoBehaviour { }')],
         ['Assets/Scripts/WebSmoke.cs.tcmeta', Buffer.from('SchemaVersion: 2\nAsset:\n  Handle: 123\n  Type: CSharpScript\n')],
       ]) fileBytes.set(path, bytes)
       const files = []
@@ -194,7 +194,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.from('mismatch') })).status, 400)
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.alloc(8 * 1024 * 1024 + 1) })).status, 413)
       assert.equal((await (await request(`/v1/projects/${project.id}`)).json()).etag, current.etag)
-      manifest = { schemaVersion: 2, engineCommit: '41708b6c756d530a1c71f0e0ef2539a1df1bb03e', sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
+      manifest = { schemaVersion: 2, engineCommit: '0b8829a864ff53ad0ad2c7ded56ef433325a836a', sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
     })
 
     await t.test('incomplete, forged and cross-project manifests cannot advance the project', async () => {
@@ -262,15 +262,12 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       manifest = changed
     })
 
-    for (const engineCommit of ['053fcce44c36ef94c4bd4a3750da7eb4e75d0303', '2ee941e6ad50e5797ec91bbfb90d0d29a0ece30e', 'bb692873f48ec3eff092b1991c693224e5613b4e', '331d1e0b15edc202a375e9568b5cefea5821e18c', '5feb6666d531864fb22daaadc0aa9bc12b241f84', '9f27888c2869493503a210235d77d1247a308f1e', 'b0002beabdb2d4b0e7e2c64603f8c284436cf4db']) await t.test(`editor-only engine update ${engineCommit.slice(0, 8)} preserves project history`, async () => {
-      const previous = fullRevision.revisionId
-      const oldManifest = manifest
-      manifest = { ...manifest, engineCommit }
-      const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: manifest, headers: { 'If-Match': current.etag } })
-      assert.equal(response.status, 201)
-      fullRevision = await response.json()
-      current = await (await request(`/v1/projects/${project.id}`)).json()
-      assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${previous}`)).json(), oldManifest)
+    await t.test('Managed API v5 projects cannot be relabeled as compatible with v6', async () => {
+      for (const engineCommit of ['41708b6c756d530a1c71f0e0ef2539a1df1bb03e', 'b0002beabdb2d4b0e7e2c64603f8c284436cf4db']) {
+        const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: { ...manifest, engineCommit }, headers: { 'If-Match': current.etag } })
+        assert.equal(response.status, 400)
+      }
+      assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
     })
 
     await t.test('database and session survive service restart', async () => {
