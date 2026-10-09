@@ -271,3 +271,5 @@ Mail__From=TomCat <noreply@你已验证的域名>
 编辑器会话现在允许 7 个 Web C# 工具：script_get_api、script_list、script_read、script_write、script_compile、script_attach、script_detach。写入版本验证由浏览器引擎边界完成，后端继续限制项目所有者、会话凭证、工具白名单和请求去重。script_compile / editor_play 单次等待上限 120 秒；任务状态查询维持浏览器心跳，避免编译阻塞命令轮询时误判离线。
 
 Web Project 文件管理更新：接受 `5feb6666d531864fb22daaadc0aa9bc12b241f84`，场景/项目格式与已有版本相同。完整修订可附带 `directories` 保存空文件夹；资源路径允许中文及内部空格，仍拒绝目录穿越、文件/目录冲突和超限路径。
+
+场景文件归属修复：兼容 `9f27888c2869493503a210235d77d1247a308f1e`。只改变编辑器保存行为，项目与场景格式不变，既有版本仍可打开和保存。
