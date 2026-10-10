@@ -26,7 +26,7 @@ public sealed class Database(string directory)
         using var transaction = connection.BeginTransaction();
         using var version = Command(connection, "PRAGMA user_version;", transaction);
         var current = Convert.ToInt32(version.ExecuteScalar());
-        string[] migrations = ["001_initial.sql", "002_uploads.sql", "003_publish.sql", "004_email_auth.sql", "005_password_recovery.sql", "006_ai_conversations.sql"];
+        string[] migrations = ["001_initial.sql", "002_uploads.sql", "003_publish.sql", "004_email_auth.sql", "005_password_recovery.sql", "006_ai_conversations.sql", "007_ai_workspace.sql"];
         if (current > migrations.Length) throw new InvalidOperationException("Database schema is newer than this API.");
         for (var index = current; index < migrations.Length; index++)
         {

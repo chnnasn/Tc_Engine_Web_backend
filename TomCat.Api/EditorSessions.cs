@@ -50,7 +50,8 @@ public sealed class EditorSessions
     public static readonly HashSet<string> Tools = ["editor_get_status", "scene_get_tree", "entity_get", "component_get_schema",
         "entity_create", "entity_delete", "entity_reparent", "component_add", "component_remove", "component_set",
         "editor_play", "editor_pause", "editor_stop", "history_undo", "history_redo", "project_get_sync_status",
-        "script_get_api", "script_list", "script_read", "script_write", "script_compile", "script_attach", "script_detach"];
+        "script_get_api", "script_list", "script_read", "script_write", "script_compile", "script_attach", "script_detach",
+        "scene_apply_patch", "scene_get_diff", "runtime_validate", "project_knowledge_list", "project_knowledge_save"];
 
     private Session? Find(string id, Database db)
     {
@@ -139,6 +140,7 @@ public sealed class EditorSessions
             try
             {
                 if (run.SessionId is not null) AiConversations.Complete(db, run.SessionId, outcome);
+                AiWorkspace.Interrupted(db, session.Id);
             }
             catch (Exception error)
             {
@@ -196,6 +198,7 @@ public sealed class EditorSessions
             {
                 if (!session.Commands.TryGetValue(commandId, out var command) || !command.Delivered) return Results.NotFound();
                 if (command.Result.Task.IsCompleted) return Results.Conflict();
+                AiWorkspace.Result(db, session, command, result);
                 command.Result.TrySetResult(result.Clone());
             }
             return Results.NoContent();
@@ -307,12 +310,17 @@ public sealed class EditorSessions
                     if (session.Commands.Count >= 512) return Results.Json(new { ok = false, error = new { code = "SESSION_LIMIT", message = "Reconnect and inspect the scene before continuing." } });
                     if (session.LastPoll < DateTimeOffset.UtcNow.AddSeconds(-45)) return Results.Json(new { ok = false, error = new { code = "EDITOR_OFFLINE", message = "The editor is not connected." } });
                     command = new(input.RequestId, input.Name!, input.Arguments);
+                    AiWorkspace.Queued(db, session, command);
                     session.Commands.Add(command.Id, command);
-                    session.Queue.Writer.TryWrite(command);
+                    if (input.Name is "project_knowledge_list" or "project_knowledge_save") {
+                        var result = AiWorkspace.Knowledge(db, session, input.Name, input.Arguments);
+                        AiWorkspace.Result(db, session, command, result);
+                        command.Result.TrySetResult(result);
+                    } else session.Queue.Writer.TryWrite(command);
                 }
             }
             using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, session.Closed.Token);
-            cancellation.CancelAfter(TimeSpan.FromSeconds(input.Name is "script_compile" or "editor_play" ? 120 : 30));
+            cancellation.CancelAfter(TimeSpan.FromSeconds(input.Name is "script_compile" or "editor_play" or "runtime_validate" ? 120 : 30));
             try { return Results.Json(await command.Result.Task.WaitAsync(cancellation.Token)); }
             catch (OperationCanceledException)
             {

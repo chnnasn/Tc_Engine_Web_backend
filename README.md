@@ -1,5 +1,22 @@
 # TomCat ASP.NET Core / SQLite 后端
 
+## AI 项目知识与执行证据
+
+启动时自动应用 `007_ai_workspace.sql`，保存项目笔记、工具事件和试验副本来源。需要同时更新前端与 Python Agent；不改变引擎版本。
+
+| 方法 | 路径 | 功能 |
+| --- | --- | --- |
+| GET / PUT | `/v1/projects/{id}/ai-knowledge` | 读取笔记 / 保存 `{ key, content, expectedVersion }`，新笔记版本为 0，冲突返回 409 |
+| GET | `/v1/projects/{id}/ai-runs/{runId}/events?after=0` | 每页最多 100 条工具事件，返回 `hasMore` 和 `nextAfter` |
+| POST | `/v1/projects/{id}/experiments` | `{ name, baseRevisionId }` 创建独立项目和来源关系；前端随后通过完整项目保存接口复制内容 |
+| GET | `/v1/projects/{id}/experiment` | 来源项目和基线修订；普通项目返回 204 |
+
+上述接口均检查项目所有权，写接口沿用请求头保护。笔记最多 100 条、每条 4000 字符，使用版本比较防止覆盖；记录来源任务和引擎版本，始终标注为未验证观察。副本的知识和对话独立，删除来源项目不删除副本。
+
+命令实际入队前保存工具事件，结果到达后更新。大于 32768 字符的参数或结果保存明确的截断标记、SHA-256 和 8192 字符预览；不会存会话授权令牌。重启和任务结束时将未确认事件标为 `outcome_unknown`，不能据此推断未执行。记录可在重启后复查，但内存命令队列和 Agent 执行状态仍不能恢复。`runtime_validate` 与既有的 `script_compile`、`editor_play` 单次工具等待上限为 120 秒，其余为 30 秒。
+
+`node --test tests/ai-workspace.test.mjs` 验证权限、笔记并发版本、工具去重和重启持久化、分页隔离及副本来源。真实引擎端到端验收位于前端 `tests/workspace-browser.mjs`。
+
 ## Web AI 编辑器会话
 
 新增 `EditorSessions.cs`，为相邻 `Tc_Engine_Web_Mcp` 的 LangChain Agent 提供按账号、云端项目和浏览器会话隔离的命令通道。设置 `Agent__Url` 和至少 32 字符的 `Agent__Secret`（与 Python 的 `TOMCAT_AGENT_SECRET` 一致）后，前端可通过 AI 面板执行。
