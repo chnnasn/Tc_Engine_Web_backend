@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  buildManagedPayload, collectScripts, extractEmbeddedManifest,
+  buildManagedPayload, collectScripts, cookScriptAssetsJson, extractEmbeddedManifest,
   generatedProjectXml, readScriptHandle, scriptAssetsJson, sourceHash,
 } from '../cook/managed-payload.mjs'
 
@@ -57,6 +57,33 @@ test('emits ScriptAssets.json without losing uint64 precision', () => {
   assert.throws(() => scriptAssetsJson([{ path: 'a.cs', handle: '12x' }]), /十进制 uint64/)
   assert.throws(() => scriptAssetsJson([{ path: 'a.cs', handle: '18446744073709551616' }]), /超出 uint64/)
   assert.equal(scriptAssetsJson([{ path: 'a.cs' }]), '{"version":1,"assets":{}}')
+})
+
+test('cook discovery keeps only manifest behaviours while compilation retains helpers', () => {
+  const scripts = [
+    { path: 'Assets/Game.cs', handle: '6200000000000000010' },
+    { path: 'Assets/Physics.cs', handle: '6200000000000000011' },
+    { path: 'Assets/Rules.cs', handle: '6200000000000000012' },
+  ]
+  const manifest = '{"version":1,"scripts":[{"assetHandle":6200000000000000010,"typeName":"Game"}]}'
+  assert.equal(cookScriptAssetsJson(scripts, manifest), '{"version":1,"assets":{"Assets/Game.cs":6200000000000000010}}')
+  assert.ok(scriptAssetsJson(scripts).includes('"Assets/Physics.cs":6200000000000000011'))
+  assert.ok(scriptAssetsJson(scripts).includes('"Assets/Rules.cs":6200000000000000012'))
+  assert.equal(scripts.length, 3, 'normalizing discovery must not remove compilation inputs')
+  assert.equal(cookScriptAssetsJson(scripts, '{"version":1,"scripts":[]}'), '{"version":1,"assets":{}}')
+})
+
+test('cook discovery rejects missing, duplicate, and unmatched behaviour handles', () => {
+  const scripts = [{ path: 'Assets/Game.cs', handle: '6200000000000000010' }]
+  const manifest = handles => `{"version":1,"scripts":[${handles.map(handle => `{"assetHandle":${handle}}`).join(',')}]}`
+  assert.throws(() => cookScriptAssetsJson(scripts, manifest(['6200000000000000011'])), /未映射/)
+  assert.throws(() => cookScriptAssetsJson(scripts, manifest(['6200000000000000010', '6200000000000000010'])), /重复/)
+  assert.throws(() => cookScriptAssetsJson([...scripts, { path: 'Assets/Other.cs', handle: scripts[0].handle }], manifest([scripts[0].handle])), /重复/)
+  assert.throws(() => cookScriptAssetsJson(scripts, '{"version":1,"scripts":[{}]}'), /assetHandle/)
+  for (const bad of ['0', '-1', '1e3', '1.5', '"6200000000000000010"', '18446744073709551616']) {
+    assert.throws(() => cookScriptAssetsJson(scripts, manifest([bad])), /assetHandle/)
+  }
+  assert.throws(() => cookScriptAssetsJson(scripts, '{"version":2,"scripts":[]}'), /version\/scripts/)
 })
 
 test('collects Assets scripts in project-relative order', async () => {

@@ -49,6 +49,40 @@ export function scriptAssetsJson(scripts) {
   return `{"version":1,"assets":{${entries.join(',')}}}`
 }
 
+// Older native cookers require this discovery map to match the generated
+// MonoBehaviour manifest exactly. Compilation still receives every source file
+// and its handle; helper classes remain in the assembly and in sourceHash.
+export function cookScriptAssetsJson(scripts, manifestJson) {
+  scriptAssetsJson(scripts) // Validate decimal uint64 source handles first.
+  const byHandle = new Map()
+  for (const script of scripts) {
+    if (!script.handle) continue
+    if (byHandle.has(script.handle)) throw new Error(`重复脚本 Handle：${script.handle}`)
+    byHandle.set(script.handle, script)
+  }
+  // Node 22 (the worker image) supplies the original numeric token to revivers.
+  // Never round a 64-bit handle through a JavaScript Number, even temporarily.
+  const manifest = JSON.parse(manifestJson, (key, value, context) => {
+    if (key !== 'assetHandle') return value
+    if (typeof value !== 'number' || !context?.source || !/^[1-9]\d*$/.test(context.source)) {
+      throw new Error('清单 assetHandle 必须是十进制 uint64')
+    }
+    return context.source
+  })
+  if (manifest?.version !== 1 || !Array.isArray(manifest.scripts)) throw new Error('脚本清单 version/scripts 无效')
+  const selected = new Set()
+  for (const script of manifest.scripts) {
+    const handle = script?.assetHandle
+    if (typeof handle !== 'string' || !/^[1-9]\d*$/.test(handle) || BigInt(handle) > 18446744073709551615n) {
+      throw new Error('清单 assetHandle 必须是十进制 uint64')
+    }
+    if (selected.has(handle)) throw new Error(`清单重复脚本 Handle：${handle}`)
+    if (!byHandle.has(handle)) throw new Error(`清单脚本 Handle 未映射到源文件：${handle}`)
+    selected.add(handle)
+  }
+  return scriptAssetsJson(scripts.filter(script => selected.has(script.handle)))
+}
+
 // 收集 Assets 下的全部 .cs，路径按项目相对路径排序（与桌面 EnumerateSources 一致）。
 export function collectScripts(projectRoot) {
   const scripts = []
@@ -311,6 +345,7 @@ export function buildManagedPayload(options) {
   if (!manifestJson) {
     throw new Error('Assembly-CSharp.dll 中没有源生成器写出的脚本清单（ScriptManifest.Json）。')
   }
+  const discoveryScriptAssets = cookScriptAssetsJson(scripts, manifestJson)
   const pdbPath = join(buildDirectory, 'Assembly-CSharp.pdb')
   const hasPdb = existsSync(pdbPath)
   // 引擎 cook 的发现路径（AssetManager::LoadProjectManagedPayload）从
@@ -324,9 +359,10 @@ export function buildManagedPayload(options) {
     assembly: `Build/${buildId}/Assembly-CSharp.dll`,
     ...(hasPdb ? { pdb: `Build/${buildId}/Assembly-CSharp.pdb` } : {}),
   }))
-  // 发现路径还会校验 Library/ScriptProject/ScriptAssets.json 的 Handle 映射。
+  // Discovery in older native cookers only accepts mountable MonoBehaviours.
+  // Keep the full source map used by the generator in the immutable build folder.
   mkdirSync(join(projectRoot, 'Library', 'ScriptProject'), { recursive: true })
-  writeFileSync(join(projectRoot, 'Library', 'ScriptProject', 'ScriptAssets.json'), scriptAssetsJson(scripts))
+  writeFileSync(join(projectRoot, 'Library', 'ScriptProject', 'ScriptAssets.json'), discoveryScriptAssets)
   return {
     buildId,
     manifestJson,
