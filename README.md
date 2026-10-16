@@ -116,7 +116,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 作品发布与打包
 
-Docker 打包器、C# API / 源生成器与前端统一固定为 `0b8829a864ff53ad0ad2c7ded56ef433325a836a`（上游 [PR #29](https://github.com/chnnasn/TomCat_Engine/pull/29)），使用 Managed API v6 和 TCPAK v8。脚本改用 MonoBehaviour 与同步无参 Awake/Update 等生命周期，并支持作用域任务和协程。新修订只接受该引擎提交；旧 API v5 项目及作品不再兼容，数据库历史修订保留。Linux 容器仍使用 Node 驱动 Emscripten Web Player，并用 .NET SDK 编译 C#，不运行 Windows CLI 或原生 DLL 模块。
+Docker 打包器、C# API / 源生成器与前端统一固定为 `5734c56ae05241b01a684afb8e62f2b164c69ba2`（上游 [PR #30](https://github.com/chnnasn/TomCat_Engine/pull/30)），使用 Managed API v6 和 TCPAK v8。此版支持浏览器驻留音频输出、动态脚本常用 BCL 与多字体加载；流式音频仍不支持。脚本继续使用 MonoBehaviour 与同步无参 Awake/Update 等生命周期，并支持作用域任务和协程。新修订接受当前提交与经过真实作品/云端归档兼容回归的上一版 `0b8829a864ff53ad0ad2c7ded56ef433325a836a`；旧 API v5 项目及作品不再兼容，数据库历史修订保留。Linux 容器仍使用 Node 驱动 Emscripten Web Player，并用 .NET SDK 编译 C#，不运行 Windows CLI 或原生 DLL 模块。
 
 发布把项目最新一次云端保存的修订交给已配置的打包器打包为 TCPAK，产出对游客公开的游戏包。容器镜像内置引擎自带的 Emscripten 打包器（见下「服务端打包」），因此 linux-x64 部署不再依赖 Windows 桌面 CLI。发布前会先把 Redis 待落库快照固化为正式修订（基线冲突返回 409）；同一项目同时只允许一个进行中的发布任务（409），失败会记录原因并可在排除问题后重新发布。取消发布或删除项目会立即移除公开入口（删除项目经外键级联）。CookWorker 为单实例设计：同一时刻只打包一个任务，进程重启后未完成任务自动重试。
 
@@ -133,12 +133,12 @@ Docker 打包器、C# API / 源生成器与前端统一固定为 `0b8829a864ff53
 
 上游 `54697ebf` 泛化了播放器的 cook 入口（`tc_web_player_cook(projectPath, outputPath)`，旧符号 `tc_web_player_cook_sample` 保留为委托 shim），于是「引擎自带的 TCPAK writer」可以在浏览器之外的 Node 里运行。本仓库据此把打包器搬进了 API 容器，linux-x64 部署不再需要 Windows 主机、额外的 cook 服务，也不需要预编译 CLI。
 
-- `Dockerfile` 的 `source` 阶段检出上游引擎（按顶部 `ARG ENGINE_COMMIT`，当前 `54697ebf723749783bea6df6e9f7f7afd3af6530`）并初始化 `Box2D/glm/spdlog/ImGuizmo` 子模块，供后续阶段共用。
+- `Dockerfile` 的 `source` 阶段检出上游引擎（按顶部 `ARG ENGINE_COMMIT`，与前端 `engine.lock.json` 一致）并初始化 `Box2D/glm/spdlog/ImGuizmo` 子模块，供后续阶段共用。
 - `player` 阶段用 `emscripten/emsdk:4.0.15` 只构建 `tomcat_player` 目标（`emcmake` + CMake + Ninja）。该目标**不需要 .NET SDK，也不需要 wasm-tools 工作负载**。产物 `tomcat_player.js/.wasm/.data` 在运行时阶段落到 `/app/player`。
 - `managed` 阶段用 .NET SDK 构建 `TomCat.Managed.dll`（脚本 API 面）与 `TomCat.ScriptGenerator.dll`（Roslyn 源生成器），与打包器同一提交，落到运行时镜像的 `/app/managed`。
 - `cook/worker.mjs` 是容器内的打包入口：CookWorker 物化出的项目目录整棵镜像进模块 MEMFS（同一绝对路径，`Project::Load` 与 `CookToPackage` 都接受绝对路径），调用 `tc_web_player_cook(projectPath, outputPath)`，再把产物拷回宿主路径。失败时打印 `tc_web_player_error()` 并以 cook 返回码（1/2/3）退出，发布记录照常得到真实原因；基础设施错误（缺模块、缺参数、C# 编译失败）用退出码 4 区分。它接受位置参数，也能解析 `cook --project X --output Y` 形态。
-- 版本策略：容器内打包器固定 `54697ebf`（泛化 cook 入口从该提交起才有），浏览器播放器继续锁 `684eb8f3`。两者 `ManagedApiCurrent = 5` 一致、TCPAK 格式一致，所以新打包器产出的包（含 C# 载荷）可以被当前网页播放器直接加载，前端 `engine.lock.json` 不需要被迫升级。打包器提交同时写入环境变量 `TOMCAT_COOK_ENGINE_COMMIT` 便于核对，游玩页已有的版本警告横幅作为兜底；后续前端锁升级到 ≥ `54697ebf` 时自然对齐。
-- 更换打包器提交只需改 `Dockerfile` 顶部的 `ARG ENGINE_COMMIT`（或构建时传 `--build-arg ENGINE_COMMIT=<sha>`），`source`/`player`/`managed` 阶段会重新检出并构建。
+- 版本策略：容器打包器、托管脚本 API / 源生成器与浏览器播放器统一固定提交，使用 Managed API v6 与 TCPAK v8。只允许当前提交和经过实际旧作品播放、云端归档恢复验证的上一版 `0b8829a864ff53ad0ad2c7ded56ef433325a836a`，不会仅凭提交格式或 API 版本号放行未知版本。打包器提交同时写入环境变量 `TOMCAT_COOK_ENGINE_COMMIT` 便于核对。
+- 更换打包器提交时同步更新 `Dockerfile` 顶部的 `ARG ENGINE_COMMIT`、`ProjectFiles` 的明确兼容列表和前端锁文件；`source`/`player`/`managed` 阶段会重新检出并构建。旧版本仅在播放器和编辑器兼容回归通过后保留。
 
 C# 项目打包（替代桌面 `CompileManaged`）：
 

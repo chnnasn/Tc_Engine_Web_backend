@@ -1,4 +1,5 @@
 import { emailRegister, mailedCode } from './email-helper.mjs'
+import { currentEngineCommit } from './engine-version.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
@@ -60,7 +61,7 @@ test('Redis working snapshots and SQLite checkpoints', { timeout: 90000, skip: !
     project = await (await request('/projects', { method: 'POST', body: { name: 'Realtime', template: '2D' } })).json()
     const bytes = Buffer.from('{}'), hash = createHash('sha256').update(bytes).digest('hex')
     const upload = await (await request(`/projects/${project.id}/uploads/${hash}`, { method: 'PUT', bytes })).json()
-    manifest = { schemaVersion: 2, engineCommit: '0b8829a864ff53ad0ad2c7ded56ef433325a836a', sceneHandle: '123', archive: 'first', files: ['Project.tcproj', 'ProjectSettings/BuildSettings.json', 'ProjectSettings/ProjectSettings.json', 'ProjectSettings/PlayerSettings.json'].map(path => ({ path, ...upload })) }
+    manifest = { schemaVersion: 2, engineCommit: currentEngineCommit, sceneHandle: '123', archive: 'first', files: ['Project.tcproj', 'ProjectSettings/BuildSettings.json', 'ProjectSettings/ProjectSettings.json', 'ProjectSettings/PlayerSettings.json'].map(path => ({ path, ...upload })) }
 
     await t.test('working state is recoverable before any database revision exists', async () => {
       assert.equal((await (await request('/projects/sync-config')).json()).enabled, true)

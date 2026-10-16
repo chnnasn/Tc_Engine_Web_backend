@@ -1,4 +1,5 @@
 import { emailRegister, mailedCode } from './email-helper.mjs'
+import { currentEngineCommit, previousEngineCommit } from './engine-version.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -194,7 +195,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.from('mismatch') })).status, 400)
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.alloc(8 * 1024 * 1024 + 1) })).status, 413)
       assert.equal((await (await request(`/v1/projects/${project.id}`)).json()).etag, current.etag)
-      manifest = { schemaVersion: 2, engineCommit: '0b8829a864ff53ad0ad2c7ded56ef433325a836a', sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
+      manifest = { schemaVersion: 2, engineCommit: currentEngineCommit, sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
     })
 
     await t.test('incomplete, forged and cross-project manifests cannot advance the project', async () => {
@@ -268,6 +269,19 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
         assert.equal(response.status, 400)
       }
       assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
+    })
+
+    await t.test('only the current and verified previous Managed API v6 commits can save revisions', async () => {
+      for (const engineCommit of [previousEngineCommit, currentEngineCommit]) {
+        manifest = { ...manifest, engineCommit }
+        const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: manifest, headers: { 'If-Match': current.etag } })
+        assert.equal(response.status, 201)
+        fullRevision = await response.json()
+        current = fullRevision
+        assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
+      }
+      const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: { ...manifest, engineCommit: 'a'.repeat(40) }, headers: { 'If-Match': current.etag } })
+      assert.equal(response.status, 400)
     })
 
     await t.test('database and session survive service restart', async () => {

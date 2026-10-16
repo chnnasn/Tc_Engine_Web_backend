@@ -1,4 +1,5 @@
 import { emailRegister, mailedCode } from './email-helper.mjs'
+import { currentEngineCommit } from './engine-version.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -102,7 +103,7 @@ async function createSavedProject(request, name, user = 'alice') {
   }
   const payload = {
     schemaVersion: 2,
-    engineCommit: '0b8829a864ff53ad0ad2c7ded56ef433325a836a',
+    engineCommit: currentEngineCommit,
     sceneHandle: '12007672766582721512',
     archive: 'SchemaVersion: 11\nSceneName: web\nEntities: []\n',
     files: manifest,
@@ -173,7 +174,7 @@ test('publish chain: save, publish, cook, play publicly', { timeout: 120000 }, a
 
     const detail = await fetch(`${api.baseUrl}/v1/games/published/${projectId}`)
     assert.equal(detail.status, 200)
-    assert.equal((await json(detail)).engineCommit, '0b8829a864ff53ad0ad2c7ded56ef433325a836a')
+    assert.equal((await json(detail)).engineCommit, currentEngineCommit)
     assert.equal((await fetch(`${api.baseUrl}/v1/games/published/missing-project`)).status, 404)
 
     const pack = await fetch(`${api.baseUrl}/v1/games/published/${projectId}/package`)
