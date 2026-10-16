@@ -1,5 +1,5 @@
 import { emailRegister, mailedCode } from './email-helper.mjs'
-import { currentEngineCommit, previousEngineCommit } from './engine-version.mjs'
+import { currentEngineCommit, previousEngineCommits } from './engine-version.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -77,6 +77,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
     let current
     let fullRevision
     let manifest
+    const compatibleRevisions = []
     const fileBytes = new Map()
     const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 
@@ -271,14 +272,15 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
     })
 
-    await t.test('only the current and verified previous Managed API v6 commits can save revisions', async () => {
-      for (const engineCommit of [previousEngineCommit, currentEngineCommit]) {
+    await t.test('only the current and both verified previous Managed API v6 commits can save revisions', async () => {
+      for (const engineCommit of [...previousEngineCommits, currentEngineCommit]) {
         manifest = { ...manifest, engineCommit }
         const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: manifest, headers: { 'If-Match': current.etag } })
         assert.equal(response.status, 201)
         fullRevision = await response.json()
         current = fullRevision
         assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
+        compatibleRevisions.push({ id: fullRevision.revisionId, payload: manifest })
       }
       const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: { ...manifest, engineCommit: 'a'.repeat(40) }, headers: { 'If-Match': current.etag } })
       assert.equal(response.status, 400)
@@ -292,6 +294,9 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.equal(restored.name, '重命名')
       assert.equal(restored.etag, current.etag)
       assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
+      for (const revision of compatibleRevisions) {
+        assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${revision.id}`)).json(), revision.payload)
+      }
       for (const file of manifest.files) assert.deepEqual(Buffer.from(await (await request(`/v1/projects/${project.id}/uploads/${file.uploadId}`)).arrayBuffer()), fileBytes.get(file.path))
       assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${first.revisionId}`)).json(), payload)
     })

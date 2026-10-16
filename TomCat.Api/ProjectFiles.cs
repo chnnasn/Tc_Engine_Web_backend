@@ -26,9 +26,9 @@ public static class ProjectFiles
         files = [];
         if (payload.TryGetProperty("aiCheckpoint", out _) && AiCheckpoint.Read(payload) is null) return false;
         if (!payload.TryGetProperty("engineCommit", out var commit) || commit.ValueKind != JsonValueKind.String ||
-            // Both API v6 revisions passed actual package and scene-archive
-            // compatibility tests; unknown revisions remain unsupported.
-            commit.GetString() is not ("5734c56ae05241b01a684afb8e62f2b164c69ba2" or "0b8829a864ff53ad0ad2c7ded56ef433325a836a") ||
+            // Keep the current API v6 engine and the two previously verified
+            // package/scene revisions; unknown revisions remain unsupported.
+            commit.GetString() is not ("9a0ccad79bb4ec33225bd8210fe9b47438bb06bc" or "5734c56ae05241b01a684afb8e62f2b164c69ba2" or "0b8829a864ff53ad0ad2c7ded56ef433325a836a") ||
             !payload.TryGetProperty("sceneHandle", out var scene) || scene.ValueKind != JsonValueKind.String ||
             !Regex.IsMatch(scene.GetString()!, "^[1-9][0-9]*$") || !ulong.TryParse(scene.GetString(), out _) ||
             !payload.TryGetProperty("archive", out var archive) || archive.ValueKind != JsonValueKind.String ||
