@@ -1,7 +1,7 @@
 # 服务端打包器与后端共用上游 TomCat_Engine，提交在此固定；浏览器播放器锁在
 # engine.lock.json 使用同一提交；Managed API v6、TCPAK v8。
 ARG ENGINE_REPOSITORY=https://github.com/chnnasn/TomCat_Engine.git
-ARG ENGINE_COMMIT=9a0ccad79bb4ec33225bd8210fe9b47438bb06bc
+ARG ENGINE_COMMIT=c28487215bd5df89b35c1d68252ba240231d9c4f
 
 # ---------------------------------------------------------------------------
 # 0. 引擎源码：检出并初始化构建 Web Player 所需的最小子模块，供后续阶段共用。

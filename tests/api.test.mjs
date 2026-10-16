@@ -272,7 +272,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.deepEqual(await (await request(`/v1/projects/${project.id}/revisions/${fullRevision.revisionId}`)).json(), manifest)
     })
 
-    await t.test('only the current and both verified previous Managed API v6 commits can save revisions', async () => {
+    await t.test('only the current and explicitly supported previous Managed API v6 commits can save revisions', async () => {
       for (const engineCommit of [...previousEngineCommits, currentEngineCommit]) {
         manifest = { ...manifest, engineCommit }
         const response = await request(`/v1/projects/${project.id}/revisions`, { method: 'POST', body: manifest, headers: { 'If-Match': current.etag } })
