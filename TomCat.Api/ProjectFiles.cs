@@ -28,7 +28,7 @@ public static class ProjectFiles
         if (!payload.TryGetProperty("engineCommit", out var commit) || commit.ValueKind != JsonValueKind.String ||
             // Keep the current API v6 engine and all explicitly supported
             // released revisions; unknown revisions remain unsupported.
-            commit.GetString() is not ("c28487215bd5df89b35c1d68252ba240231d9c4f" or "9a0ccad79bb4ec33225bd8210fe9b47438bb06bc" or "5734c56ae05241b01a684afb8e62f2b164c69ba2" or "0b8829a864ff53ad0ad2c7ded56ef433325a836a") ||
+            commit.GetString() is not ("b04d81d80a92fdf28ce7c27d37e24005e8a8f984" or "c28487215bd5df89b35c1d68252ba240231d9c4f" or "9a0ccad79bb4ec33225bd8210fe9b47438bb06bc" or "5734c56ae05241b01a684afb8e62f2b164c69ba2" or "0b8829a864ff53ad0ad2c7ded56ef433325a836a") ||
             !payload.TryGetProperty("sceneHandle", out var scene) || scene.ValueKind != JsonValueKind.String ||
             !Regex.IsMatch(scene.GetString()!, "^[1-9][0-9]*$") || !ulong.TryParse(scene.GetString(), out _) ||
             !payload.TryGetProperty("archive", out var archive) || archive.ValueKind != JsonValueKind.String ||
