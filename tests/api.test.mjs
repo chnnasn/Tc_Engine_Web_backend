@@ -174,7 +174,9 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
         ['ProjectSettings/ProjectSettings.json', Buffer.from('{"name":"完整配置"}')],
         ['ProjectSettings/PlayerSettings.json', Buffer.from('{"width":1234}')],
         ['Assets/WebImports/pixel.tga', Buffer.from([0, 0, 2, 255])],
-        ['Assets/WebImports/pixel.tga.tcmeta', Buffer.from('Handle: 18446744073709551615')],
+        // The byte-exact upload/download checks below also preserve imported
+        // pixel-art sampling when an edited project is saved and reopened.
+        ['Assets/WebImports/pixel.tga.tcmeta', Buffer.from('SchemaVersion: 2\nAsset:\n  Handle: 18446744073709551615\n  Type: Texture2D\n  ImportSettings:\n    filterMode: nearest\n    wrapU: clamp\n    wrapV: clamp\n  SubAssets: []\n')],
         ['Assets/Scripts/WebSmoke.cs', Buffer.from('public sealed class WebSmoke : MonoBehaviour { }')],
         ['Assets/Scripts/WebSmoke.cs.tcmeta', Buffer.from('SchemaVersion: 2\nAsset:\n  Handle: 123\n  Type: CSharpScript\n')],
       ]) fileBytes.set(path, bytes)
@@ -197,6 +199,31 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
       assert.equal((await request(`/v1/projects/${project.id}/uploads/${'0'.repeat(64)}`, { method: 'PUT', bytes: Buffer.alloc(8 * 1024 * 1024 + 1) })).status, 413)
       assert.equal((await (await request(`/v1/projects/${project.id}`)).json()).etag, current.etag)
       manifest = { schemaVersion: 2, engineCommit: currentEngineCommit, sceneHandle: '18446744073709551615', archive: 'Scene: Complete', files }
+    })
+
+    await t.test('four concurrent uploads preserve distinct bytes and deduplicate a racing hash', async () => {
+      const batch = ['alpha', 'beta', 'shared', 'shared'].map((value, index) => ({
+        path: `ProjectSettings/Concurrent${index}.json`, bytes: Buffer.from(JSON.stringify({ value })),
+      }))
+      const upload = file => request(`/v1/projects/${project.id}/uploads/${hash(file.bytes)}`, { method: 'PUT', bytes: file.bytes })
+      const responses = await Promise.all(batch.map(upload))
+      assert.deepEqual(responses.slice(0, 2).map(response => response.status), [201, 201])
+      assert.deepEqual(responses.slice(2).map(response => response.status).sort(), [200, 201])
+      const rows = await Promise.all(responses.map(response => response.json()))
+      assert.deepEqual(rows[2], rows[3])
+      assert.equal(new Set(rows.map(row => row.uploadId)).size, 3)
+      const repeated = await Promise.all(batch.map(upload))
+      assert.ok(repeated.every(response => response.status === 200))
+      assert.deepEqual(await Promise.all(repeated.map(response => response.json())), rows)
+      for (let index = 0; index < batch.length; index++) {
+        const { path, bytes } = batch[index]
+        assert.equal(rows[index].contentHash, hash(bytes))
+        assert.equal(rows[index].size, bytes.length)
+        fileBytes.set(path, bytes)
+        // The revision/download/restart tests below verify every added path.
+        manifest.files.push({ path, ...rows[index] })
+      }
+      assert.equal((await (await request(`/v1/projects/${project.id}`)).json()).etag, current.etag)
     })
 
     await t.test('incomplete, forged and cross-project manifests cannot advance the project', async () => {
