@@ -3,7 +3,7 @@ import { currentEngineCommit, previousEngineCommits } from './engine-version.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
@@ -83,7 +83,14 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
 
     await t.test('v1 database upgrades without changing existing revisions', async () => {
       const db = new DatabaseSync(join(directory, 'tomcat.db'))
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7)
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8)
+      const backups = (await readdir(directory)).filter(name => name.startsWith('tomcat-before-schema-1-') && name.endsWith('.db'))
+      assert.equal(backups.length, 1)
+      const backup = new DatabaseSync(join(directory, backups[0]), { readOnly: true })
+      assert.equal(backup.prepare('PRAGMA user_version').get().user_version, 1)
+      assert.equal(backup.prepare("SELECT payload FROM revisions WHERE id='migration-revision'").get().payload, '{"schemaVersion":1}')
+      assert.equal(backup.prepare('PRAGMA integrity_check').get().integrity_check, 'ok')
+      backup.close()
       assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_turns'").get()?.name, 'ai_turns')
       assert.equal(db.prepare("SELECT payload FROM revisions WHERE id='migration-revision'").get().payload, '{"schemaVersion":1}')
       // 发布表随 003 迁移建立：新增的发布能力不得影响既有修订数据。

@@ -23,11 +23,20 @@ public sealed class Database(string directory)
     {
         using var connection = Open();
         using (var wal = Command(connection, "PRAGMA journal_mode = WAL;")) wal.ExecuteNonQuery();
-        using var transaction = connection.BeginTransaction();
-        using var version = Command(connection, "PRAGMA user_version;", transaction);
+        using var version = Command(connection, "PRAGMA user_version;");
         var current = Convert.ToInt32(version.ExecuteScalar());
-        string[] migrations = ["001_initial.sql", "002_uploads.sql", "003_publish.sql", "004_email_auth.sql", "005_password_recovery.sql", "006_ai_conversations.sql", "007_ai_workspace.sql"];
+        string[] migrations = ["001_initial.sql", "002_uploads.sql", "003_publish.sql", "004_email_auth.sql", "005_password_recovery.sql", "006_ai_conversations.sql", "007_ai_workspace.sql", "008_administration.sql"];
         if (current > migrations.Length) throw new InvalidOperationException("Database schema is newer than this API.");
+        if (current > 0 && current < migrations.Length)
+        {
+            // The backup API includes committed WAL pages. Never copy a live .db file directly.
+            // Keep the snapshot on the persistent volume and fail startup if backup fails.
+            var backupPath = Path.Combine(directory, $"tomcat-before-schema-{current}-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Id()}.db");
+            using var backup = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = backupPath }.ToString());
+            backup.Open();
+            connection.BackupDatabase(backup);
+        }
+        using var transaction = connection.BeginTransaction();
         for (var index = current; index < migrations.Length; index++)
         {
             var sql = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Migrations", migrations[index]));

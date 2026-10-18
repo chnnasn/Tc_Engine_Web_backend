@@ -47,20 +47,26 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     options.Events.OnValidatePrincipal = async context =>
     {
         using var connection = context.HttpContext.RequestServices.GetRequiredService<Database>().Open();
-        using var query = Database.Command(connection, "SELECT session_version FROM users WHERE id=$id AND email IS NOT NULL AND email_verified_at IS NOT NULL;", null,
+        using var query = Database.Command(connection, "SELECT session_version,is_admin FROM users WHERE id=$id AND email IS NOT NULL AND email_verified_at IS NOT NULL AND is_suspended=0;", null,
             ("$id", context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier)));
-        var stored = query.ExecuteScalar();
+        using var reader = query.ExecuteReader();
+        var exists = reader.Read();
         var claimed = context.Principal?.FindFirstValue("session_version") ?? "0";
-        if (stored is null || !long.TryParse(claimed, out var version) || Convert.ToInt64(stored) != version)
+        if (!exists || !long.TryParse(claimed, out var version) || reader.GetInt64(0) != version)
         {
             context.RejectPrincipal();
             await context.HttpContext.SignOutAsync();
+        }
+        else if (context.Principal?.Identity is ClaimsIdentity identity)
+        {
+            foreach (var role in identity.FindAll(ClaimTypes.Role).ToArray()) identity.RemoveClaim(role);
+            if (reader.GetBoolean(1)) identity.AddClaim(new Claim(ClaimTypes.Role, "admin"));
         }
     };
     options.Events.OnRedirectToLogin = context => { context.Response.StatusCode = 401; return Task.CompletedTask; };
     options.Events.OnRedirectToAccessDenied = context => { context.Response.StatusCode = 403; return Task.CompletedTask; };
 });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options => options.AddPolicy("admin", policy => policy.RequireAuthenticatedUser().RequireRole("admin")));
 builder.Services.AddSingleton<EditorSessions>();
 builder.Services.AddSingleton<GameCatalog>();
 builder.Services.AddHostedService<CookWorker>();
@@ -75,6 +81,9 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
+    options.AddPolicy("community-write", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.Connection.RemoteIpAddress?.ToString() ?? "guest", _ => new FixedWindowRateLimiterOptions
+        { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
         ProxyIdentity.Client(context, builder.Configuration["Proxy:Secret"]), _ => new FixedWindowRateLimiterOptions
         { PermitLimit = 20, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
@@ -82,6 +91,7 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 app.Services.GetRequiredService<Database>().Initialize();
+Administration.Bootstrap(app.Services.GetRequiredService<Database>(), app.Configuration);
 AiConversations.Recover(app.Services.GetRequiredService<Database>());
 AiWorkspace.Interrupted(app.Services.GetRequiredService<Database>());
 app.UseForwardedHeaders();
@@ -111,8 +121,8 @@ app.Use(async (context, next) =>
         await context.Response.WriteAsJsonAsync(new { error = "自动同步服务暂不可用，本地草稿已保留，请稍后重试。" });
     }
 });
-app.UseRateLimiter();
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 EditorSessions.Map(app);
@@ -122,13 +132,15 @@ GamePackages.Map(app);
 
 EmailAuth.Map(app);
 PasswordAuth.Map(app);
+Community.Map(app);
+Administration.Map(app);
 app.MapPost("/v1/auth/login", async (Credentials input, Database db, IPasswordHasher<UserRow> hasher, HttpContext context) =>
 {
     var login = input.Email?.Trim().ToLowerInvariant();
     if (string.IsNullOrWhiteSpace(login) || login.Length > 254 || input.Password is null || input.Password.Length > 128)
         return Results.Unauthorized();
     using var connection = db.Open();
-    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at,session_version FROM users WHERE email=$login AND email_verified_at IS NOT NULL;", null, ("$login", login));
+    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at,session_version,is_admin FROM users WHERE email=$login AND email_verified_at IS NOT NULL AND is_suspended=0;", null, ("$login", login));
     using var reader = query.ExecuteReader();
     if (!reader.Read()) return Results.Unauthorized();
     var user = new UserRow(reader.GetString(0), reader.GetString(1), reader.GetString(2));
@@ -140,7 +152,7 @@ app.MapPost("/v1/auth/login", async (Credentials input, Database db, IPasswordHa
 app.MapGet("/v1/auth/me", (HttpContext context, Database db) =>
 {
     using var connection = db.Open();
-    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at FROM users WHERE id=$id;", null, ("$id", Owner(context)));
+    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at,session_version,is_admin FROM users WHERE id=$id;", null, ("$id", Owner(context)));
     using var reader = query.ExecuteReader();
     return reader.Read() ? Results.Ok(EmailAuth.PublicUser(reader)) : Results.Unauthorized();
 }).RequireAuthorization();

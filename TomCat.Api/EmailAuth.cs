@@ -69,7 +69,7 @@ public static class EmailAuth
         if (value is null || value.Length > 254 || !MailAddress.TryCreate(value, out var address) || address.Address != value || !value.Contains('@')) return null;
         return value;
     }
-    public static object PublicUser(SqliteDataReader reader) => new { id = reader.GetString(0), email = reader.GetString(3), emailVerified = !reader.IsDBNull(4) };
+    public static object PublicUser(SqliteDataReader reader) => new { id = reader.GetString(0), email = reader.GetString(3), emailVerified = !reader.IsDBNull(4), isAdmin = reader.GetBoolean(6) };
     public static Task SignIn(HttpContext context, string id, string email, long version = 0) => context.SignInAsync(new ClaimsPrincipal(new ClaimsIdentity(
         [new Claim(ClaimTypes.NameIdentifier, id), new Claim(ClaimTypes.Name, email), new Claim("session_version", version.ToString())], CookieAuthenticationDefaults.AuthenticationScheme)));
 
@@ -98,7 +98,7 @@ public static class EmailAuth
             transaction.Commit();
             return Results.Ok(new { token });
         }).RequireRateLimiting("auth");
-        app.MapPost("/v1/auth/complete-registration", async (EmailComplete input, Database db, HttpContext context) =>
+        app.MapPost("/v1/auth/complete-registration", async (EmailComplete input, Database db, IConfiguration config, HttpContext context) =>
         {
             if (input.Token is null || !Regex.IsMatch(input.Token, "^[A-Fa-f0-9]{64}$")) return Results.BadRequest(new { error = "邮箱验证已失效，请重新验证。" });
             using var connection = db.Open(); using var transaction = connection.BeginTransaction();
@@ -110,17 +110,18 @@ public static class EmailAuth
                 email = reader.GetString(0); password = reader.GetString(1);
             }
             var id = Database.Id();
+            var isAdmin = Administration.IsBootstrapEmail(config, email);
             try
             {
                 // The historical NOT NULL column is an internal opaque identifier only.
                 // Account identity and the public API use the verified email exclusively.
-                using var insert = Database.Command(connection, "INSERT INTO users(id,username,password_hash,created_at,email,email_verified_at) VALUES($id,$id,$password,$now,$email,$now);", transaction, ("$id", id), ("$password", password), ("$now", Database.Now()), ("$email", email)); insert.ExecuteNonQuery();
+                using var insert = Database.Command(connection, "INSERT INTO users(id,username,password_hash,created_at,email,email_verified_at,is_admin) VALUES($id,$id,$password,$now,$email,$now,$admin);", transaction, ("$id", id), ("$password", password), ("$now", Database.Now()), ("$email", email), ("$admin", isAdmin)); insert.ExecuteNonQuery();
             }
             catch (SqliteException exception) when (exception.SqliteErrorCode == 19) { return Results.Conflict(new { error = "邮箱已被使用，请登录。" }); }
             using var delete = Database.Command(connection, "DELETE FROM email_challenges WHERE email=$email;", transaction, ("$email", email)); delete.ExecuteNonQuery();
             transaction.Commit();
             await SignIn(context, id, email);
-            return Results.Ok(new { id, email, emailVerified = true });
+            return Results.Ok(new { id, email, emailVerified = true, isAdmin });
         }).RequireRateLimiting("auth");
     }
 

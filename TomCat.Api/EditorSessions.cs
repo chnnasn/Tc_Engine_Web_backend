@@ -57,7 +57,8 @@ public sealed class EditorSessions
     {
         if (!sessions.TryGetValue(id, out var session)) return null;
         using var connection = db.Open();
-        if (session.Expires < DateTimeOffset.UtcNow || Database.GetProject(connection, session.Owner, session.Project) is null)
+        using var active = Database.Command(connection, "SELECT COUNT(*) FROM users WHERE id=$id AND is_suspended=0", null, ("$id", session.Owner));
+        if (Convert.ToInt64(active.ExecuteScalar()) == 0 || session.Expires < DateTimeOffset.UtcNow || Database.GetProject(connection, session.Owner, session.Project) is null)
         { Close(id); return null; }
         return session;
     }

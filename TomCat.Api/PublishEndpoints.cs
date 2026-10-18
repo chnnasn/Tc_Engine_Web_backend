@@ -54,6 +54,9 @@ public static class PublishEndpoints
             using (var connection = db.Open())
             using (var transaction = connection.BeginTransaction())
             {
+                using var blocked = Database.Command(connection, "SELECT COUNT(*) FROM publication_moderation WHERE project_id=$project;", transaction, ("$project", id));
+                if (Convert.ToInt64(blocked.ExecuteScalar()) > 0)
+                    return Results.Json(new { error = "此作品已被管理员下架，请联系管理员处理。" }, statusCode: 403);
                 using var pending = Database.Command(connection,
                     "SELECT COUNT(*) FROM publications WHERE project_id=$project AND status='pending';", transaction, ("$project", id));
                 if (Convert.ToInt32(pending.ExecuteScalar()) > 0)
@@ -115,7 +118,7 @@ public static class PublishEndpoints
         {
             using var connection = db.Open();
             using var command = Database.Command(connection,
-                "SELECT project_id, title, description, byte_length, sha256, published_at, engine_commit FROM publications WHERE status='published' ORDER BY published_at DESC;");
+                "SELECT project_id, title, description, byte_length, sha256, published_at, engine_commit FROM publications p WHERE status='published' AND NOT EXISTS(SELECT 1 FROM publication_moderation m WHERE m.project_id=p.project_id) ORDER BY published_at DESC;");
             using var reader = command.ExecuteReader();
             var games = new List<object>();
             while (reader.Read()) games.Add(PublicGame(reader));
@@ -126,7 +129,7 @@ public static class PublishEndpoints
         {
             using var connection = db.Open();
             using var command = Database.Command(connection,
-                "SELECT project_id, title, description, byte_length, sha256, published_at, engine_commit FROM publications WHERE status='published' AND project_id=$project;",
+                "SELECT project_id, title, description, byte_length, sha256, published_at, engine_commit FROM publications p WHERE status='published' AND project_id=$project AND NOT EXISTS(SELECT 1 FROM publication_moderation m WHERE m.project_id=p.project_id);",
                 null, ("$project", id));
             using var reader = command.ExecuteReader();
             return reader.Read() ? Results.Ok(PublicGame(reader)) : Results.NotFound(new { error = "作品不存在或已取消发布。" });
@@ -136,14 +139,14 @@ public static class PublishEndpoints
         {
             using var connection = db.Open();
             using var command = Database.Command(connection,
-                "SELECT package, sha256 FROM publications WHERE status='published' AND project_id=$project;", null, ("$project", id));
+                "SELECT package, sha256 FROM publications p WHERE status='published' AND project_id=$project AND NOT EXISTS(SELECT 1 FROM publication_moderation m WHERE m.project_id=p.project_id);", null, ("$project", id));
             using var reader = command.ExecuteReader();
             if (!reader.Read() || reader.IsDBNull(0)) return Results.NotFound(new { error = "作品不存在或已取消发布。" });
             var bytes = (byte[])reader[0];
             var etag = $"\"{reader.GetString(1)}\"";
             context.Response.Headers.ETag = etag;
-            // The package is immutable content; override the global no-store like the built-in games do.
-            context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+            // A stable URL must revalidate so moderation and unpublishing take effect.
+            context.Response.Headers.CacheControl = "public, max-age=0, must-revalidate";
             context.Response.Headers.XContentTypeOptions = "nosniff";
             if (context.Request.Headers.IfNoneMatch.ToString() == etag) return Results.StatusCode(304);
             return Results.File(bytes, "application/octet-stream", enableRangeProcessing: true);

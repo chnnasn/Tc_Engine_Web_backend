@@ -181,7 +181,7 @@ test('publish chain: save, publish, cook, play publicly', { timeout: 120000 }, a
     assert.equal(pack.status, 200)
     assert.equal(await pack.text(), 'FAKE-TCPAK-V7-TEST-PACKAGE\n')
     assert.equal(pack.headers.get('etag'), state.etag)
-    assert.match(pack.headers.get('cache-control'), /immutable/)
+    assert.match(pack.headers.get('cache-control'), /must-revalidate/)
     const cached = await fetch(`${api.baseUrl}/v1/games/published/${projectId}/package`, { headers: { 'If-None-Match': state.etag } })
     assert.equal(cached.status, 304)
 

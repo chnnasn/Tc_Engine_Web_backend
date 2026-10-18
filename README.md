@@ -1,5 +1,25 @@
 # TomCat ASP.NET Core / SQLite 后端
 
+## 管理员与社区
+
+`Admin:Email` 默认配置为 `chnnasn@gmail.com`（可通过服务端变量 `Admin__Email` 覆盖）。启动时为数据库中该邮箱的**已验证账号**授予管理员权限；尚未注册时，使用该邮箱正常注册并完成邮件验证，完成后自动成为管理员。沿用原有密码与找回密码流程，没有默认密码，也不会跳过邮箱所有权验证。管理员权限持久化到数据库；修改引导邮箱不会自动撤销已授予的权限。
+
+前后端一起部署后，使用该账号登录，头像菜单中进入“管理后台”，或访问 `/admin`。后台提供注册账号、项目、社区内容、公开作品及资源存储的实际计数；可搜索并分页管理账号、帖子、回复和作品，置顶/取消置顶话题、永久删除话题或回复、封禁/解封账号、下架/恢复作品。每项操作必须填写原因，并与修改在同一数据库事务内写入审计记录。管理员不可被封禁。封禁立即使旧 Cookie 在后续请求中失效，解封后必须重新登录；编辑器委托连接也会检查封禁状态。
+
+新增迁移 `008_administration.sql`，保留既有账号和项目。社区从浏览器本地演示改为 SQLite 持久化数据：游客可浏览，已登录用户可发帖与回复，写入每账号每分钟最多 30 次；旧浏览器预览内容不会自动公开上传。公开作者使用匿名化标识，不返回邮箱。后台管理接口仅允许服务端管理员角色访问，每次请求按数据库重新核验权限；不能通过修改前端状态或提交 `isAdmin` 提升权限。
+
+对已有数据库升级前，启动流程先调用 SQLite Backup API，将包含已提交 WAL 页的一致性快照保存到同一持久目录，命名为 `tomcat-before-schema-{旧版本}-{时间}-{ID}.db`。备份失败会阻止迁移和启动；空数据库不生成备份。备份随持久卷保留，需按运维策略另行归档与清理。
+
+- `GET /v1/admin/overview`：站点数据；`GET /v1/admin/{users|topics|replies|publications|audit}?offset=0&q=`：每页最多 50 条。
+- `PUT /v1/admin/users/{id}/suspension`：`{ suspended, reason }`。
+- `PUT /v1/admin/topics/{id}/pin`：`{ pinned, reason }`。
+- `DELETE /v1/admin/{topics|replies}/{id}`：JSON 请求体 `{ reason }`；删话题级联删除回复。
+- `PUT /v1/admin/publications/{id}/moderation`：`{ blocked, reason }`。下架记录独立于发布记录，作者取消发布后仍不能绕过下架重新发布；不删除源项目。公开列表、详情和包下载同时检查下架状态。包 URL 改为每次重新验证缓存；升级前已缓存的旧包无法远程撤回。
+- `GET/POST /v1/community/topics`：列表（支持 `offset/category/q`）/创建 `{ title, content, category }`；`GET /v1/community/topics/{id}`：详情。
+- `GET/POST /v1/community/topics/{id}/replies`：回复列表（支持 `offset`）/创建 `{ content }`。
+
+验证：`dotnet build TomCat.Api -c Release`，`node --test tests/admin-community.test.mjs`。测试使用临时数据库及本地邮件目录，覆盖验证后授权、越权和 CSRF 拒绝、社区持久化、删除级联、封禁失效、下架不可绕过、审计和重启。
+
 ## AI 项目知识与执行证据
 
 启动时自动应用 `007_ai_workspace.sql`，保存项目笔记、工具事件和试验副本来源。需要同时更新前端与 Python Agent；不改变引擎版本。
