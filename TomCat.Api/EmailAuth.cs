@@ -13,7 +13,7 @@ namespace TomCat.Api;
 
 public sealed record EmailStart(string? Email, string? Password);
 public sealed record EmailVerify(string? ChallengeId, string? Code);
-public sealed record EmailComplete(string? Token);
+public sealed record EmailComplete(string? Token, bool RememberMe = false);
 
 public sealed class VerificationMail(IConfiguration config, IHostEnvironment environment, IHttpClientFactory clients)
 {
@@ -69,9 +69,10 @@ public static class EmailAuth
         if (value is null || value.Length > 254 || !MailAddress.TryCreate(value, out var address) || address.Address != value || !value.Contains('@')) return null;
         return value;
     }
-    public static object PublicUser(SqliteDataReader reader) => new { id = reader.GetString(0), email = reader.GetString(3), emailVerified = !reader.IsDBNull(4), isAdmin = reader.GetBoolean(6) };
-    public static Task SignIn(HttpContext context, string id, string email, long version = 0) => context.SignInAsync(new ClaimsPrincipal(new ClaimsIdentity(
-        [new Claim(ClaimTypes.NameIdentifier, id), new Claim(ClaimTypes.Name, email), new Claim("session_version", version.ToString())], CookieAuthenticationDefaults.AuthenticationScheme)));
+    public static object PublicUser(SqliteDataReader reader) => new { id = reader.GetString(0), email = reader.GetString(3), emailVerified = !reader.IsDBNull(4), isAdmin = reader.GetBoolean(6), displayName = UserProfiles.Name(reader.GetString(0), reader.GetString(7)), avatarUrl = UserProfiles.AvatarUrl(reader.GetString(0), reader.GetString(8)) };
+    public static Task SignIn(HttpContext context, string id, string email, long version = 0, bool rememberMe = false, DateTimeOffset? expires = null) => context.SignInAsync(new ClaimsPrincipal(new ClaimsIdentity(
+        [new Claim(ClaimTypes.NameIdentifier, id), new Claim(ClaimTypes.Name, email), new Claim("session_version", version.ToString())], CookieAuthenticationDefaults.AuthenticationScheme)),
+        new AuthenticationProperties { IsPersistent = rememberMe, ExpiresUtc = expires ?? DateTimeOffset.UtcNow.Add(rememberMe ? TimeSpan.FromDays(30) : TimeSpan.FromHours(8)), AllowRefresh = false });
 
     public static void Map(WebApplication app)
     {
@@ -98,7 +99,7 @@ public static class EmailAuth
             transaction.Commit();
             return Results.Ok(new { token });
         }).RequireRateLimiting("auth");
-        app.MapPost("/v1/auth/complete-registration", async (EmailComplete input, Database db, IConfiguration config, HttpContext context) =>
+        app.MapPost("/v1/auth/complete-registration", async (EmailComplete input, Database db, RememberedAccounts remembered, IConfiguration config, HttpContext context) =>
         {
             if (input.Token is null || !Regex.IsMatch(input.Token, "^[A-Fa-f0-9]{64}$")) return Results.BadRequest(new { error = "邮箱验证已失效，请重新验证。" });
             using var connection = db.Open(); using var transaction = connection.BeginTransaction();
@@ -120,8 +121,9 @@ public static class EmailAuth
             catch (SqliteException exception) when (exception.SqliteErrorCode == 19) { return Results.Conflict(new { error = "邮箱已被使用，请登录。" }); }
             using var delete = Database.Command(connection, "DELETE FROM email_challenges WHERE email=$email;", transaction, ("$email", email)); delete.ExecuteNonQuery();
             transaction.Commit();
-            await SignIn(context, id, email);
-            return Results.Ok(new { id, email, emailVerified = true, isAdmin });
+            await SignIn(context, id, email, rememberMe: input.RememberMe);
+            remembered.Remember(context, id, 0, input.RememberMe);
+            return Results.Ok(new { id, email, emailVerified = true, isAdmin, displayName = UserProfiles.Name(id, ""), avatarUrl = (string?)null });
         }).RequireRateLimiting("auth");
     }
 

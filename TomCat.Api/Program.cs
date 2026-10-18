@@ -26,6 +26,7 @@ Directory.CreateDirectory(dataDirectory);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 16 * 1024 * 1024);
 builder.Services.AddSingleton(new Database(dataDirectory));
 builder.Services.AddSingleton<VerificationMail>();
+builder.Services.AddSingleton<RememberedAccounts>();
 builder.Services.AddHttpClient("verification-mail", client =>
 {
     client.BaseAddress = new Uri("https://api.resend.com/");
@@ -42,7 +43,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     options.Cookie.HttpOnly = true;
     options.Cookie.SameSite = SameSiteMode.Strict;
     options.Cookie.SecurePolicy = builder.Environment.IsDevelopment() ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
-    options.ExpireTimeSpan = TimeSpan.FromHours(8);
+    options.ExpireTimeSpan = TimeSpan.FromDays(30);
     options.SlidingExpiration = false;
     options.Events.OnValidatePrincipal = async context =>
     {
@@ -81,6 +82,9 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
+    options.AddPolicy("activity", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "guest", _ => new FixedWindowRateLimiterOptions
+        { PermitLimit = 120, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("community-write", context => RateLimitPartition.GetFixedWindowLimiter(
         context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.Connection.RemoteIpAddress?.ToString() ?? "guest", _ => new FixedWindowRateLimiterOptions
         { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
@@ -134,30 +138,35 @@ EmailAuth.Map(app);
 PasswordAuth.Map(app);
 Community.Map(app);
 Administration.Map(app);
-app.MapPost("/v1/auth/login", async (Credentials input, Database db, IPasswordHasher<UserRow> hasher, HttpContext context) =>
+UserProfiles.Map(app);
+Activity.Map(app);
+RememberedAccounts.Map(app);
+app.MapPost("/v1/auth/login", async (Credentials input, Database db, RememberedAccounts remembered, IPasswordHasher<UserRow> hasher, HttpContext context) =>
 {
     var login = input.Email?.Trim().ToLowerInvariant();
     if (string.IsNullOrWhiteSpace(login) || login.Length > 254 || input.Password is null || input.Password.Length > 128)
         return Results.Unauthorized();
     using var connection = db.Open();
-    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at,session_version,is_admin FROM users WHERE email=$login AND email_verified_at IS NOT NULL AND is_suspended=0;", null, ("$login", login));
+    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at,session_version,is_admin,display_name,avatar_version FROM users WHERE email=$login AND email_verified_at IS NOT NULL AND is_suspended=0;", null, ("$login", login));
     using var reader = query.ExecuteReader();
     if (!reader.Read()) return Results.Unauthorized();
     var user = new UserRow(reader.GetString(0), reader.GetString(1), reader.GetString(2));
     if (hasher.VerifyHashedPassword(user, user.PasswordHash, input.Password) == PasswordVerificationResult.Failed) return Results.Unauthorized();
     var result = EmailAuth.PublicUser(reader);
-    await EmailAuth.SignIn(context, user.Id, reader.GetString(3), reader.GetInt64(5));
+    await EmailAuth.SignIn(context, user.Id, reader.GetString(3), reader.GetInt64(5), input.RememberMe);
+    remembered.Remember(context, user.Id, reader.GetInt64(5), input.RememberMe);
     return Results.Ok(result);
 }).RequireRateLimiting("auth");
 app.MapGet("/v1/auth/me", (HttpContext context, Database db) =>
 {
     using var connection = db.Open();
-    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at,session_version,is_admin FROM users WHERE id=$id;", null, ("$id", Owner(context)));
+    using var query = Database.Command(connection, "SELECT id,username,password_hash,email,email_verified_at,session_version,is_admin,display_name,avatar_version FROM users WHERE id=$id;", null, ("$id", Owner(context)));
     using var reader = query.ExecuteReader();
     return reader.Read() ? Results.Ok(EmailAuth.PublicUser(reader)) : Results.Unauthorized();
 }).RequireAuthorization();
-app.MapPost("/v1/auth/logout", async (HttpContext context) =>
+app.MapPost("/v1/auth/logout", async (HttpContext context, RememberedAccounts remembered) =>
 {
+    remembered.Remove(context, Owner(context));
     await context.SignOutAsync();
     return Results.NoContent();
 }).RequireAuthorization();

@@ -25,7 +25,7 @@ public sealed class Database(string directory)
         using (var wal = Command(connection, "PRAGMA journal_mode = WAL;")) wal.ExecuteNonQuery();
         using var version = Command(connection, "PRAGMA user_version;");
         var current = Convert.ToInt32(version.ExecuteScalar());
-        string[] migrations = ["001_initial.sql", "002_uploads.sql", "003_publish.sql", "004_email_auth.sql", "005_password_recovery.sql", "006_ai_conversations.sql", "007_ai_workspace.sql", "008_administration.sql"];
+        string[] migrations = ["001_initial.sql", "002_uploads.sql", "003_publish.sql", "004_email_auth.sql", "005_password_recovery.sql", "006_ai_conversations.sql", "007_ai_workspace.sql", "008_administration.sql", "009_profiles_activity.sql"];
         if (current > migrations.Length) throw new InvalidOperationException("Database schema is newer than this API.");
         if (current > 0 && current < migrations.Length)
         {

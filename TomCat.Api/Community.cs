@@ -10,8 +10,8 @@ public static class Community
     static readonly string[] Categories = ["综合讨论", "作品分享", "开发日志", "创作求助", "经验分享"];
     internal const string TopicSelect = """
         SELECT t.id,t.title,t.content,t.category,t.owner_id AS ownerId,t.pinned,t.created_at AS time,
-        (SELECT COUNT(*) FROM community_replies r WHERE r.topic_id=t.id) AS replies
-        FROM community_topics t
+        (SELECT COUNT(*) FROM community_replies r WHERE r.topic_id=t.id) AS replies,u.display_name,u.avatar_version,u.is_admin
+        FROM community_topics t JOIN users u ON u.id=t.owner_id
         """;
     internal static List<object> Topics(SqliteConnection connection, string suffix, params (string Key, object? Value)[] parameters)
     {
@@ -21,8 +21,9 @@ public static class Community
         while (reader.Read()) result.Add(new
         {
             id = reader.GetString(0), title = reader.GetString(1), content = reader.GetString(2), category = reader.GetString(3),
-            author = Author(reader.GetString(4)), pinned = reader.GetBoolean(5), time = reader.GetString(6),
-            replies = reader.GetInt64(7), avatar = "T", color = "#e5ece4"
+            author = UserProfiles.Name(reader.GetString(4), reader.GetString(8)), ownerId = reader.GetString(4),
+            avatarUrl = UserProfiles.AvatarUrl(reader.GetString(4), reader.GetString(9)), isAdmin = reader.GetBoolean(10),
+            pinned = reader.GetBoolean(5), time = reader.GetString(6), replies = reader.GetInt64(7), avatar = "T", color = "#e5ece4"
         });
         return result;
     }
@@ -63,10 +64,10 @@ public static class Community
             if (Convert.ToInt64(exists.ExecuteScalar()) == 0) return Results.NotFound();
             using var count = Database.Command(connection, "SELECT COUNT(*) FROM community_replies WHERE topic_id=$id", null, ("$id", id));
             var total = Convert.ToInt64(count.ExecuteScalar());
-            using var command = Database.Command(connection, "SELECT id,content,owner_id,created_at FROM community_replies WHERE topic_id=$id ORDER BY created_at,id LIMIT 50 OFFSET $offset", null, ("$id", id), ("$offset", Offset(offset)));
+            using var command = Database.Command(connection, "SELECT r.id,r.content,r.owner_id,r.created_at,u.display_name,u.avatar_version,u.is_admin FROM community_replies r JOIN users u ON u.id=r.owner_id WHERE r.topic_id=$id ORDER BY r.created_at,r.id LIMIT 50 OFFSET $offset", null, ("$id", id), ("$offset", Offset(offset)));
             using var reader = command.ExecuteReader();
             var items = new List<object>();
-            while (reader.Read()) items.Add(new { id = reader.GetString(0), text = reader.GetString(1), author = Author(reader.GetString(2)), time = reader.GetString(3) });
+            while (reader.Read()) items.Add(new { id = reader.GetString(0), text = reader.GetString(1), ownerId = reader.GetString(2), author = UserProfiles.Name(reader.GetString(2), reader.GetString(4)), avatarUrl = UserProfiles.AvatarUrl(reader.GetString(2), reader.GetString(5)), isAdmin = reader.GetBoolean(6), time = reader.GetString(3) });
             return Results.Ok(new { total, items });
         });
         routes.MapPost("/topics/{id}/replies", (string id, ReplyInput input, Database db, HttpContext context) =>
@@ -80,7 +81,9 @@ public static class Community
             using var insert = Database.Command(connection, "INSERT INTO community_replies VALUES($reply,$topic,$owner,$content,$now)", transaction,
                 ("$reply", reply), ("$topic", id), ("$owner", owner), ("$content", input.Content.Trim()), ("$now", now));
             insert.ExecuteNonQuery(); transaction.Commit();
-            return Results.Created($"/v1/community/topics/{id}/replies", new { id = reply, text = input.Content.Trim(), author = Author(owner), time = now });
+            using var profile = Database.Command(connection, "SELECT display_name,avatar_version,is_admin FROM users WHERE id=$owner", null, ("$owner", owner));
+            using var user = profile.ExecuteReader(); user.Read();
+            return Results.Created($"/v1/community/topics/{id}/replies", new { id = reply, text = input.Content.Trim(), ownerId = owner, author = UserProfiles.Name(owner, user.GetString(0)), avatarUrl = UserProfiles.AvatarUrl(owner, user.GetString(1)), isAdmin = user.GetBoolean(2), time = now });
         }).RequireAuthorization().RequireRateLimiting("community-write");
     }
 }
