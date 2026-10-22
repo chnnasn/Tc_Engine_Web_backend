@@ -1,7 +1,7 @@
 # 服务端打包器与后端共用上游 TomCat_Engine，提交在此固定；浏览器播放器锁在
 # engine.lock.json 使用同一提交；Managed API v6、TCPAK v8。
 ARG ENGINE_REPOSITORY=https://github.com/chnnasn/TomCat_Engine.git
-ARG ENGINE_COMMIT=26b6b11a9211ad6380c754a6fada2b4f508a918f
+ARG ENGINE_COMMIT=29ffd832f5468e45db06af868e3d989156c5613f
 
 # ---------------------------------------------------------------------------
 # 0. 引擎源码：检出并初始化构建 Web Player 所需的最小子模块，供后续阶段共用。
@@ -29,16 +29,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=source /engine /engine
-
-# 固定的上游提交按 Windows 路径大小写引用头文件，Linux 需使用实际名称。
-RUN find /engine/TomCat/src -type f \( -name '*.h' -o -name '*.cpp' \) \
-    -exec sed -i \
-      -e 's|TomCat/Core/Timestep.h|TomCat/Core/TimeStep.h|g' \
-      -e 's|"Platform/|"platform/|g' \
-      -e 's|<glfw/glfw3.h>|<GLFW/glfw3.h>|g' {} +
-
-# 此目标未启用 pthread；Emscripten 不允许导出不存在的 PThread 运行时。
-RUN sed -i "s/,'PThread'//g" /engine/Web/CMakeLists.txt
 
 # emcmake 会重置子进程 PATH，显式传入 Ninja 路径，避免依赖 PATH 查找。
 SHELL ["/bin/bash", "-c"]
@@ -91,7 +81,7 @@ FROM node:22-bookworm-slim AS node
 # ---------------------------------------------------------------------------
 # 4. 运行时：ASP.NET Core + Node + Web Player + .NET SDK
 #    这里刻意用 SDK 镜像而不是 aspnet 镜像：带 C# 脚本的项目需要在容器内运行
-#    dotnet build（上游桌面的 CompileManaged 只在 Windows 下可用），MSBuild 与
+#    dotnet build（保持与浏览器相同的 Web Cook 路径），MSBuild 与
 #    Roslyn 都由 SDK 提供。代价是镜像更大；不需要 C# 打包时可换回 aspnet 镜像。
 # ---------------------------------------------------------------------------
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime

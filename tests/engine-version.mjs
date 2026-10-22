@@ -5,6 +5,7 @@ const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8
 export const currentEngineCommit = dockerfile.match(/^ARG ENGINE_COMMIT=([a-f0-9]{40})\r?$/m)?.[1]
 if (!currentEngineCommit) throw new Error('Dockerfile must pin a complete engine commit')
 export const previousEngineCommits = [
+  '26b6b11a9211ad6380c754a6fada2b4f508a918f',
   'b04d81d80a92fdf28ce7c27d37e24005e8a8f984',
   '65f38cfb7b1345dae411882f76b3fa7204e17722',
   '0b8829a864ff53ad0ad2c7ded56ef433325a836a',
