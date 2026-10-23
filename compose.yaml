@@ -1,0 +1,27 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5080:8080"
+    environment:
+      Build__WorkerUrl: http://build-worker:8080
+      Build__Secret: ${TOMCAT_BUILD_SECRET:?Set a random shared secret of at least 32 characters}
+    volumes:
+      - api-data:/data
+    depends_on:
+      - build-worker
+  build-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      Build__ApiUrl: http://api:8080
+      Build__Secret: ${TOMCAT_BUILD_SECRET:?Set a random shared secret of at least 32 characters}
+      Build__Parallelism: "1"
+    cpus: 2
+    mem_limit: 2g
+    # Only the API has a host port and a database volume.
+volumes:
+  api-data:

@@ -16,7 +16,7 @@ if (Environment.GetEnvironmentVariable("PORT") is { Length: > 0 } port)
 {
     if (!int.TryParse(port, out var railwayPort) || railwayPort is < 1 or > 65535)
         throw new InvalidOperationException("PORT must be a valid TCP port.");
-    builder.WebHost.UseUrls($"http://0.0.0.0:{railwayPort}");
+    builder.WebHost.UseUrls($"http://[::]:{railwayPort}");
 }
 // Console logging works for local development and container hosts without Windows Event Log privileges.
 builder.Logging.ClearProviders();
@@ -70,7 +70,11 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 builder.Services.AddAuthorization(options => options.AddPolicy("admin", policy => policy.RequireAuthenticatedUser().RequireRole("admin")));
 builder.Services.AddSingleton<EditorSessions>();
 builder.Services.AddSingleton<GameCatalog>();
-builder.Services.AddHostedService<CookWorker>();
+builder.Services.AddSingleton<BuildSettings>();
+builder.Services.AddSingleton<BuildDispatcher>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<BuildDispatcher>());
+builder.Services.AddHttpClient("build-events", client => client.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false });
 builder.Services.AddHttpClient("agent", client => client.Timeout = TimeSpan.FromSeconds(200));
 builder.Services.AddProblemDetails();
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
@@ -129,6 +133,7 @@ app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+BuildEndpoints.Map(app);
 EditorSessions.Map(app);
 AiConversations.Map(app);
 AiWorkspace.Map(app);

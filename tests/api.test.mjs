@@ -83,7 +83,7 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
 
     await t.test('v1 database upgrades without changing existing revisions', async () => {
       const db = new DatabaseSync(join(directory, 'tomcat.db'))
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9)
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10)
       const backups = (await readdir(directory)).filter(name => name.startsWith('tomcat-before-schema-1-') && name.endsWith('.db'))
       assert.equal(backups.length, 1)
       const backup = new DatabaseSync(join(directory, backups[0]), { readOnly: true })

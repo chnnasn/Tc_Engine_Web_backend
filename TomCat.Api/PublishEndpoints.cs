@@ -7,7 +7,7 @@ namespace TomCat.Api;
 
 // Publishing turns the latest saved revision of a project into a publicly playable game
 // package. These endpoints only manage the publication row; the cook itself runs in
-// CookWorker and fills in package/sha256 when it succeeds.
+// a separate build service. Its authenticated callback publishes the result.
 public static class PublishEndpoints
 {
     public sealed record PublishInput(string? Title, string? Description);
@@ -15,11 +15,10 @@ public static class PublishEndpoints
     public static void Map(RouteGroupBuilder projects, WebApplication app)
     {
         projects.MapPost("/{id}/publish", async (string id, PublishInput input, Database db, WorkingStates states,
-            IConfiguration config, HttpContext context) =>
+            BuildSettings settings, BuildDispatcher dispatcher, HttpContext context) =>
         {
-            var cli = config["Cook:CliPath"];
-            if (string.IsNullOrWhiteSpace(cli) || !File.Exists(cli))
-                return Results.Json(new { error = "服务器未配置打包工具（Cook:CliPath），暂时无法发布。" }, statusCode: 503);
+            if (!settings.Enabled)
+                return Results.Json(new { error = "服务器未配置独立构建服务（Build:WorkerUrl / Build:Secret），暂时无法发布。" }, statusCode: 503);
             var title = input.Title?.Trim() ?? "";
             if (title.Length is 0 or > 64 || (input.Description?.Length ?? 0) > 1000)
                 return Results.BadRequest(new { error = "标题须为 1–64 字，描述不超过 1000 字。" });
@@ -51,6 +50,7 @@ public static class PublishEndpoints
                 revision = current;
                 engineCommit = commit.GetString()!;
             }
+            var jobId = Database.Id();
             using (var connection = db.Open())
             using (var transaction = connection.BeginTransaction())
             {
@@ -64,16 +64,18 @@ public static class PublishEndpoints
                 var now = Database.Now();
                 using var upsert = Database.Command(connection,
                     """
-                    INSERT INTO publications (project_id, revision_id, engine_commit, title, description, status, error, package, byte_length, sha256, requested_at, published_at)
-                    VALUES ($project, $revision, $commit, $title, $description, 'pending', '', NULL, 0, '', $now, '')
+                    INSERT INTO publications (project_id, revision_id, engine_commit, title, description, status, error, package, byte_length, sha256, requested_at, published_at, build_job_id)
+                    VALUES ($project, $revision, $commit, $title, $description, 'pending', '', NULL, 0, '', $now, '', $job)
                     ON CONFLICT(project_id) DO UPDATE SET revision_id=$revision, engine_commit=$commit, title=$title, description=$description,
-                        status='pending', error='', package=NULL, byte_length=0, sha256='', requested_at=$now, published_at=''
+                        status='pending', error='', package=NULL, byte_length=0, sha256='', requested_at=$now, published_at='', build_job_id=$job;
+                    INSERT INTO build_jobs(id, project_id, revision_id, status, created_at) VALUES($job, $project, $revision, 'queued', $now);
                     """, transaction,
                     ("$project", id), ("$revision", revision), ("$commit", engineCommit), ("$title", title),
-                    ("$description", input.Description?.Trim() ?? ""), ("$now", now));
+                    ("$description", input.Description?.Trim() ?? ""), ("$now", now), ("$job", jobId));
                 upsert.ExecuteNonQuery();
                 transaction.Commit();
             }
+            dispatcher.Signal();
             return Results.Accepted($"/v1/projects/{id}/publish", new
             {
                 projectId = id,
@@ -82,6 +84,7 @@ public static class PublishEndpoints
                 title,
                 description = input.Description?.Trim() ?? "",
                 status = "pending",
+                buildStage = "queued",
                 error = "",
                 byteLength = 0L,
                 etag = (string?)null,
@@ -96,7 +99,8 @@ public static class PublishEndpoints
             if (Database.GetProject(connection, context.User.FindFirstValue(ClaimTypes.NameIdentifier)!, id) is null)
                 return Results.NotFound();
             using var command = Database.Command(connection,
-                "SELECT revision_id, engine_commit, title, description, status, error, byte_length, sha256, requested_at, published_at FROM publications WHERE project_id=$project;",
+                "SELECT revision_id, engine_commit, title, description, status, error, byte_length, sha256, requested_at, published_at, " +
+                "(SELECT status FROM build_jobs WHERE id=build_job_id) FROM publications WHERE project_id=$project;",
                 null, ("$project", id));
             using var reader = command.ExecuteReader();
             return reader.Read()
@@ -180,6 +184,7 @@ public static class PublishEndpoints
             etag = sha.Length == 64 ? $"\"{sha}\"" : null,
             requestedAt = reader.GetString(8),
             publishedAt = reader.GetString(9),
+            buildStage = reader.IsDBNull(10) ? null : reader.GetString(10),
         };
     }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // TomCat 服务端打包 worker（容器内 Cook:CliPath 的落点）。
 //
-// CookWorker 把一次已保存修订物化到一个一次性临时目录，然后运行这里配置的打包工具。
+// BuildRunner 把一次已保存修订物化到一个一次性临时目录，然后运行这里配置的打包工具。
 // 本部署把「打包工具」定为浏览器播放器使用的同一个 Emscripten Web Player，由 Node 驱动：
 //
 //   node /app/cook/worker.mjs <project.tcproj> <output.tcpak>
@@ -24,10 +24,10 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { buildManagedPayload } from './managed-payload.mjs'
 
-// 播放器产物目录（Dockerfile 会写入 tomcat_player.js/.wasm/.data 与 package.json）。
+// 播放器产物目录（Dockerfile.worker 会写入 tomcat_player.js/.wasm/.data 与 package.json）。
 const PLAYER_DIRECTORY = resolve(process.env.TOMCAT_PLAYER_DIR || '/app/player')
 const PLAYER_MODULE = process.env.TOMCAT_PLAYER_MODULE || 'tomcat_player.js'
-// 托管工具链目录（Dockerfile 会写入 TomCat.Managed.dll 与 TomCat.ScriptGenerator.dll）。
+// 托管工具链目录（Dockerfile.worker 会写入 TomCat.Managed.dll 与 TomCat.ScriptGenerator.dll）。
 const MANAGED_DIRECTORY = resolve(process.env.TOMCAT_MANAGED_DIR || '/app/managed')
 const DOTNET = process.env.TOMCAT_DOTNET || 'dotnet'
 

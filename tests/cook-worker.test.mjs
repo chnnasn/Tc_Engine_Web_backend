@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArguments } from '../cook/worker.mjs'
 
-// The container cook worker is driven by CookWorker as
+// The container cook worker is driven by BuildRunner as
 //   <Cook:CliPath> <Cook:CliArgs with {project}/{output} substituted>
 // so its argument contract and its failure reporting are what the publish chain
 // depends on. The end-to-end cook needs the Emscripten player artifacts from the

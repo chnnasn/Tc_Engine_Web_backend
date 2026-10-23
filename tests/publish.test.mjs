@@ -1,5 +1,6 @@
 import { emailRegister, mailedCode } from './email-helper.mjs'
 import { currentEngineCommit } from './engine-version.mjs'
+import { buildSecret, freePort, startBuildWorker } from './build-helper.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -119,14 +120,12 @@ test('publish chain: save, publish, cook, play publicly', { timeout: 120000 }, a
   await mkdir(tools)
   const fakeCli = join(tools, 'fake-cook.mjs')
   await writeFile(fakeCli, fakeCliSource)
-  const api = await start(directory, {
-    Cook__CliPath: process.execPath,
-    Cook__CliArgs: `"${fakeCli}" cook --project "{project}" --output "{output}"`,
-    Cook__PollSeconds: '1',
-  })
+  const workerPort = await freePort()
+  const api = await start(directory, { Build__WorkerUrl: `http://127.0.0.1:${workerPort}`, Build__Secret: buildSecret, Build__RetrySeconds: '1' })
+  const worker = await startBuildWorker(api.baseUrl, workerPort, fakeCli)
   const cookies = new Map()
   const request = await client(api, cookies)
-  t.after(() => api.stop())
+  t.after(async () => { await worker.stop(); await api.stop() })
   try {
     await register(request, 'alice', directory)
     const { projectId } = await createSavedProject(request, '夜航')
@@ -217,10 +216,10 @@ test('publish chain: save, publish, cook, play publicly', { timeout: 120000 }, a
     assert.deepEqual(remaining.map(game => game.id), [second.projectId])
     assert.equal((await request(`/v1/projects/${second.projectId}`, { method: 'DELETE' })).status, 204)
     assert.deepEqual(await json(await fetch(`${api.baseUrl}/v1/games/published`)), [])
-  } finally { await api.stop() }
+  } finally { await worker.stop(); await api.stop() }
 })
 
-test('publish is rejected while the cook tool is not configured', { timeout: 60000 }, async t => {
+test('publish is rejected while the independent build service is not configured', { timeout: 60000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'tomcat-publish-uncofig-'))
   const api = await start(directory)
   const cookies = new Map()
@@ -236,6 +235,6 @@ test('publish is rejected while the cook tool is not configured', { timeout: 600
       body: JSON.stringify({ title: '无工具' }),
     })
     assert.equal(response.status, 503)
-    assert.equal((await response.json()).error.includes('Cook:CliPath'), true)
+    assert.equal((await response.json()).error.includes('Build:WorkerUrl'), true)
   } finally { await api.stop() }
 })

@@ -16,7 +16,7 @@ test('verified administrator, public community, moderation, session revocation a
     output = ''
     child = spawn('dotnet', [resolve('TomCat.Api/bin/Release/net10.0/TomCat.Api.dll'), '--urls', 'http://127.0.0.1:0'], {
       cwd: resolve('TomCat.Api'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, Mail__PickupDirectory: join(directory, 'mail'), Cook__CliPath: process.execPath, Cook__PollSeconds: '60' },
+      env: { ...process.env, ASPNETCORE_ENVIRONMENT: 'Development', Storage__Directory: directory, Mail__PickupDirectory: join(directory, 'mail'), Build__WorkerUrl: 'http://127.0.0.1:1', Build__Secret: 'test-only-build-service-secret-32-characters', Build__RetrySeconds: '60' },
     })
     base = await new Promise((yes, no) => {
       const timer = setTimeout(() => { child.kill(); no(new Error(output)) }, 20000)
@@ -96,7 +96,7 @@ test('verified administrator, public community, moderation, session revocation a
     const now = new Date().toISOString()
     db.prepare('INSERT INTO revisions VALUES(?,?,?,?)').run('moderation-revision', project.id, JSON.stringify({ engineCommit: 'test' }), now)
     db.prepare('UPDATE projects SET current_revision_id=? WHERE id=?').run('moderation-revision', project.id)
-    db.prepare("INSERT INTO publications VALUES(?,?,?,?,?,'published','',?,?,?, ?,?)").run(project.id, 'moderation-revision', 'test', '作品', '', Buffer.from('game'), 4, 'a'.repeat(64), now, now)
+    db.prepare("INSERT INTO publications(project_id,revision_id,engine_commit,title,description,status,error,package,byte_length,sha256,requested_at,published_at) VALUES(?,?,?,?,?,'published','',?,?,?, ?,?)").run(project.id, 'moderation-revision', 'test', '作品', '', Buffer.from('game'), 4, 'a'.repeat(64), now, now)
     assert.equal((await request(`/games/published/${project.id}/package`)).status, 200)
     assert.equal((await moderate(`/publications/${project.id}/moderation`, { blocked: true, reason: '违规作品' })).status, 204)
     assert.equal((await request(`/games/published/${project.id}`)).status, 404)

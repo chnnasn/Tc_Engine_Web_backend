@@ -86,17 +86,21 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 访问 `http://127.0.0.1:8080/health` 应返回 `{"status":"ok"}`。容器会监听 `PORT`（默认 `8080`），并把 SQLite 数据库、WAL 和 Cookie 加密密钥统一写入 `/data`。
 
-镜像为多阶段构建：除 .NET 发布外，还会用 `emscripten/emsdk` 检出并构建上游引擎的 `tomcat_player`，并用 .NET SDK 构建 C# 脚本编译所需的托管工具链（见下「服务端打包」）。首次构建需要拉取 emsdk 镜像、克隆引擎并编译 C++ 归档，耗时和资源占用明显高于纯 .NET 构建；构建完成后运行时不包含 emsdk 与编译器，但**保留 .NET SDK**（带 C# 脚本的项目要在容器内运行 `dotnet build`）。不需要 C# 打包时，可把 `Dockerfile` 运行时阶段的基础镜像换回 `mcr.microsoft.com/dotnet/aspnet:10.0` 以显著减小体积。
+`Dockerfile` 只发布 API，运行时基于 `aspnet:10.0`，不再克隆引擎或包含 Node、.NET SDK。独立 `Dockerfile.worker` 才负责引擎、C# 工具链和打包执行。普通 API 更新不会触发 C++ 编译，也不会与项目构建争用同一个容器的 CPU/内存。
+
+本地双服务可设置一个至少 32 字符的随机 `TOMCAT_BUILD_SECRET`，然后运行 `docker compose up --build`。API 暴露 `localhost:5080`；worker 只在 Compose 内网开放。只有 API 挂载数据库卷。需要跨机器时分别启动两个镜像，把下述地址替换为可双向访问的局域网地址，并限制内网端口访问。
 
 ## Railway 部署
 
-1. 在 Railway 新建服务并连接 `Tc_Engine_Web_backend` GitHub 仓库。根目录的 `Dockerfile` 会被自动识别，`railway.json` 会配置 `/health` 健康检查和失败重启。此检查直接访问 Railway 服务容器，不经过前端 Netlify 域名。
+1. API 服务连接 `Tc_Engine_Web_backend` GitHub 仓库，使用根目录的 `Dockerfile`，健康检查设为 `/health`，失败重启最多 10 次。现有服务仍使用 `railway.json`；Railway 已停止允许新服务启用这种配置文件，新服务直接在服务设置中配置。此检查直接访问 Railway 服务容器，不经过前端 Netlify 域名。
 2. 给服务添加 Volume，挂载路径必须填写 `/data`。数据库和登录 Cookie 密钥都依赖此卷；没有卷时，重新部署会丢失数据并使现有登录失效。
 3. 在 Networking 中生成 Railway 域名。Railway 自动注入 `PORT`，无需手工填写端口或启动命令。
 4. 保持单副本运行。当前使用单文件 SQLite 和单个 Railway Volume，不支持多副本并发部署。
 5. 前端应通过同源 `/v1` 反向代理访问该服务。当前认证有意不开放跨域 Cookie；若前端与 API 使用不同来源，浏览器登录请求不会工作。
 
-打包器与 C# 编译链都已随镜像构建（`Cook__CliPath` / `Cook__CliArgs` 由 `Dockerfile` 的 `ENV` 预设），因此**不需要**再挂载 Windows 主机、另起 cook 服务或配置 GitHub Actions 去构建桌面 CLI。部署时请给构建步骤留出足够时间与内存：`player` 阶段会编译引擎 C++ 归档，属于重构建；如果 Railway 构建资源紧张，可先在 CI 里 `docker build` 并推送镜像，再让 Railway 拉取。运行时容器会在每次发布带 C# 的项目时执行一次 `dotnet build`（秒级），需要可写的 `/tmp`（`NUGET_PACKAGES` 指向 `/tmp/tomcat-nuget`），且会占用额外 CPU。
+6. 在同一项目、同一环境新建 `Tc_Engine_Build_Worker` 服务，连接同一仓库，在服务设置中指定 Dockerfile Path 为 `Dockerfile.worker`，健康检查 `/health`（60 秒），失败重启最多 10 次。不要设置 Railway Config File，不配置公网域名、不挂载 API 数据卷。Watch Paths 设为 `/TomCat.BuildWorker/**`、`/shared/**`、`/cook/**`、`/Dockerfile.worker`、`/NuGet.Config`，避免修改 API 时重建 worker。
+7. API 设置 `Build__WorkerUrl=http://<worker 的 RAILWAY_PRIVATE_DOMAIN>:8080`；worker 设置 `Build__ApiUrl=http://<API 的 RAILWAY_PRIVATE_DOMAIN>:8080`。两个服务设置相同的随机 `Build__Secret`（至少 32 字符），worker 设置 `PORT=8080`。服务同时监听 IPv4/IPv6，兼容 Railway 私网。密钥只放服务环境变量。
+8. 先部署 worker，再配置并部署 API，最后更新前端。升级到数据库版本 10 会自动创建备份，并把旧的 pending 发布转入任务队列。worker 没有 SQLite 权限，API 仍保持单副本；worker 默认一次执行一个构建，可单独限制 CPU/内存和重启。
 
 首次部署完成后访问 `https://<你的域名>/health`。返回 HTTP 200 后，再备份 Volume，并在 Railway 中启用自动备份策略。
 
@@ -148,29 +152,35 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 作品发布与打包
 
-Docker 打包器、C# API / 源生成器与前端统一固定为 `29ffd832f5468e45db06af868e3d989156c5613f`，使用 Managed API v6 和 TCPAK v8。本次同步上游 Linux 主线及共享代码修复，移除已由上游解决的头文件大小写和无效 PThread 导出补丁；浏览器引擎必须从新提交重新构建。当前提交、上一版 `26b6b11a9211ad6380c754a6fada2b4f508a918f` 及此前六个明确兼容提交均可保存修订，旧 API v5 和未知提交仍被拒绝，无需数据库迁移。上游新增的 Linux 原生 CLI、CoreCLR、OpenAL 和桌面导出能力不改变此服务的 Web 发布目标：容器继续使用 Node 驱动 Emscripten Web Player，并用 .NET SDK 编译 C#。浏览器仍不支持流式音频或原生 DLL 模块。
+Docker 打包器、C# API / 源生成器与前端统一固定为 `29ffd832f5468e45db06af868e3d989156c5613f`，使用 Managed API v6 和 TCPAK v8。本次同步上游 Linux 主线及共享代码修复，移除已由上游解决的头文件大小写和无效 PThread 导出补丁；浏览器引擎必须从新提交重新构建。当前提交、上一版 `26b6b11a9211ad6380c754a6fada2b4f508a918f` 及此前六个明确兼容提交均可保存修订，旧 API v5 和未知提交仍被拒绝，引擎格式兼容；独立构建任务使用新增的数据库迁移 010。上游新增的 Linux 原生 CLI、CoreCLR、OpenAL 和桌面导出能力不改变此服务的 Web 发布目标：容器继续使用 Node 驱动 Emscripten Web Player，并用 .NET SDK 编译 C#。浏览器仍不支持流式音频或原生 DLL 模块。
 
-发布把项目最新一次云端保存的修订交给已配置的打包器打包为 TCPAK，产出对游客公开的游戏包。容器镜像内置引擎自带的 Emscripten 打包器（见下「服务端打包」），因此 linux-x64 部署不再依赖 Windows 桌面 CLI。发布前会先把 Redis 待落库快照固化为正式修订（基线冲突返回 409）；同一项目同时只允许一个进行中的发布任务（409），失败会记录原因并可在排除问题后重新发布。取消发布或删除项目会立即移除公开入口（删除项目经外键级联）。CookWorker 为单实例设计：同一时刻只打包一个任务，进程重启后未完成任务自动重试。
+发布先将 Redis 快照固化为不可变修订，再在同一个 SQLite 事务中写入发布记录与 `build_jobs` 事件。API 提交后立即返回 202，并向 worker 的 `POST /internal/builds/events` 发送 `tomcat.build.v1` 事件。前端继续使用原发布接口，`buildStage` 区分排队与构建，并允许取消等待中的任务。
+
+worker 通过 API 私网接口取得该任务绑定的修订与资源，在自己的临时目录里校验 SHA-256、编译 C# 和打包。它定期回调 `heartbeat` 续租，完成后流式回调 `complete`，失败回调 `failed`。API 校验任务 ID、随机租约、发布修订和产物 SHA-256，再流式写入 SQLite；不会把整个 256 MiB 包缓存在 API 内存。共享密钥只用于服务间 Bearer 鉴权，拒绝带 Origin 的调用；资源接口仅能读取当前租约绑定修订的文件，worker 不接收可指定命令或回调地址的用户输入。
+
+事件采用至少一次投递：worker 忙时返回 503，API 延后投递；响应丢失保留租约，防止立即重复执行。worker 崩溃或断线后租约到期重投，最多三次。相同执行的重复事件和结果幂等；取消、删除、管理员下架或重新发布都会阻止旧任务回写。心跳失效会终止构建进程树。API 重启保留队列，worker 无需持久卷。
 
 配置：
 
-- `Cook__CliPath`：打包工具可执行文件路径。未配置或文件不存在时，发布接口返回 503。容器镜像默认 `/usr/local/bin/node`（镜像内已带 Node 与 Web Player 打包器）。
-- `Cook__CliArgs`：参数模板（默认 `cook --project "{project}" --output "{output}"`）。容器镜像默认 `/app/cook/worker.mjs "{project}" "{output}"`，即用 Node 驱动 Emscripten 打包器；也支持上游包装形式，例如 `--cli cook --project "{project}" --output "{output}"`。
-- `Cook__TimeoutSeconds`：单次打包超时（默认 900，下限 30）；超时 kills 整个进程树。
-- `Cook__PollSeconds`：后台任务轮询间隔（默认 3）。
+- API：`Build__WorkerUrl`、`Build__Secret`；未配置时发布返回 503。
+- worker：`Build__ApiUrl`、相同的 `Build__Secret`；`Cook__CliPath` / `Cook__CliArgs` 在 worker 镜像中预设，API 不再使用旧 `Cook__*` 配置。
+- API：`Build__TimeoutSeconds=900`、`Build__LeaseSeconds=60`、`Build__MaxAttempts=3`、`Build__RetrySeconds=5`。
+- worker：`Build__Parallelism=1`，允许 1–4；并发上限之外返回背压，不在内存中堆积任务。
 
-打包过程：worker 把修订清单中的文件与上传字节物化到临时目录；由于 Web 编辑会话的场景只存在于归档字符串（MEMFS 磁盘上没有场景文件），worker 会写出 `Assets/Scene/WebScene.tomcat`、对应 `.tcmeta`，并把 `ProjectSettings/BuildSettings.json` 指向该场景（`entrySceneHandle` = 修订的 `sceneHandle`），与上游 `Samples/PhysicsPlayground` 的磁盘布局一致。随后运行打包器（项目带 C# 脚本时，容器会先用 `dotnet build` 编译并按发现路径布局落盘，见下；桌面 CLI 也会先编译并校验 C# 源码。两者都要求 `BuildSettings` 配置了入口场景），读取产出的游戏包，按内容 SHA-256 记录入库。游戏包上限 256 MiB，ETag 即 SHA-256，缓存策略与内置示例包一致（immutable + 304）。用户项目是喂给打包器的不可信输入：物化在一次性临时目录中，路径经过 `SafePath` 白名单，资源字节在读取时重新校验归属与哈希，打包器以独立进程运行并受超时约束。
+无 Docker 的本地调试可分别 `dotnet run --project TomCat.Api` 和 `dotnet run --project TomCat.BuildWorker`，为两者配置上述互通地址与密钥，为 worker 额外配置本机 Node、`cook/worker.mjs`、`TOMCAT_PLAYER_DIR` 和 `TOMCAT_MANAGED_DIR`。两者可以位于不同机器。
+
+打包过程：worker 把修订清单中的文件与上传字节物化到临时目录；由于 Web 编辑会话的场景只存在于归档字符串（MEMFS 磁盘上没有场景文件），worker 会写出 `Assets/Scene/WebScene.tomcat`、对应 `.tcmeta`，并把 `ProjectSettings/BuildSettings.json` 指向该场景（`entrySceneHandle` = 修订的 `sceneHandle`），与上游 `Samples/PhysicsPlayground` 的磁盘布局一致。随后运行打包器（项目带 C# 脚本时，容器会先用 `dotnet build` 编译并按发现路径布局落盘，见下；桌面 CLI 也会先编译并校验 C# 源码。两者都要求 `BuildSettings` 配置了入口场景），读取产出的游戏包，按内容 SHA-256 记录入库。游戏包上限 256 MiB，ETag 即 SHA-256，下载使用内容 ETag，并强制重新验证以立即响应取消发布。用户项目是喂给打包器的不可信输入：物化在一次性临时目录中，路径经过 `SafePath` 白名单，资源字节在读取时重新校验归属与哈希，打包器以独立进程运行并受超时约束。
 
 服务端打包（容器内 Node + Emscripten 打包器）：
 
-上游 `54697ebf` 泛化了播放器的 cook 入口（`tc_web_player_cook(projectPath, outputPath)`，旧符号 `tc_web_player_cook_sample` 保留为委托 shim），于是「引擎自带的 TCPAK writer」可以在浏览器之外的 Node 里运行。本仓库据此把打包器搬进了 API 容器，linux-x64 部署不再需要 Windows 主机、额外的 cook 服务，也不需要预编译 CLI。
+上游 `54697ebf` 泛化了播放器的 cook 入口（`tc_web_player_cook(projectPath, outputPath)`，旧符号 `tc_web_player_cook_sample` 保留为委托 shim），于是「引擎自带的 TCPAK writer」可以在浏览器之外的 Node 里运行。本仓库在独立 worker 容器中使用该打包器，linux-x64 部署不需要 Windows 主机或预编译桌面 CLI。
 
-- `Dockerfile` 的 `source` 阶段检出上游引擎（按顶部 `ARG ENGINE_COMMIT`，与前端 `engine.lock.json` 一致）并初始化 `Box2D/glm/spdlog/ImGuizmo` 子模块，供后续阶段共用。
+- `Dockerfile.worker` 的 `source` 阶段检出上游引擎（按顶部 `ARG ENGINE_COMMIT`，与前端 `engine.lock.json` 一致）并初始化 `Box2D/glm/spdlog/ImGuizmo` 子模块，供后续阶段共用。
 - `player` 阶段用 `emscripten/emsdk:4.0.15` 只构建 `tomcat_player` 目标（`emcmake` + CMake + Ninja）。该目标**不需要 .NET SDK，也不需要 wasm-tools 工作负载**。产物 `tomcat_player.js/.wasm/.data` 在运行时阶段落到 `/app/player`。
 - `managed` 阶段用 .NET SDK 构建 `TomCat.Managed.dll`（脚本 API 面）与 `TomCat.ScriptGenerator.dll`（Roslyn 源生成器），与打包器同一提交，落到运行时镜像的 `/app/managed`。
-- `cook/worker.mjs` 是容器内的打包入口：CookWorker 物化出的项目目录整棵镜像进模块 MEMFS（同一绝对路径，`Project::Load` 与 `CookToPackage` 都接受绝对路径），调用 `tc_web_player_cook(projectPath, outputPath)`，再把产物拷回宿主路径。失败时打印 `tc_web_player_error()` 并以 cook 返回码（1/2/3）退出，发布记录照常得到真实原因；基础设施错误（缺模块、缺参数、C# 编译失败）用退出码 4 区分。它接受位置参数，也能解析 `cook --project X --output Y` 形态。
+- `cook/worker.mjs` 是容器内的打包入口：BuildRunner 物化出的项目目录整棵镜像进模块 MEMFS（同一绝对路径，`Project::Load` 与 `CookToPackage` 都接受绝对路径），调用 `tc_web_player_cook(projectPath, outputPath)`，再把产物拷回宿主路径。失败时打印 `tc_web_player_error()` 并以 cook 返回码（1/2/3）退出，发布记录照常得到真实原因；基础设施错误（缺模块、缺参数、C# 编译失败）用退出码 4 区分。它接受位置参数，也能解析 `cook --project X --output Y` 形态。
 - 版本策略：容器打包器、托管脚本 API / 源生成器与浏览器播放器统一固定提交，使用 Managed API v6 与 TCPAK v8。只允许当前提交、`26b6b11a9211ad6380c754a6fada2b4f508a918f`、`b04d81d80a92fdf28ce7c27d37e24005e8a8f984`、`65f38cfb7b1345dae411882f76b3fa7204e17722` 和明确保留的旧提交 `c28487215bd5df89b35c1d68252ba240231d9c4f`、`9a0ccad79bb4ec33225bd8210fe9b47438bb06bc`、`5734c56ae05241b01a684afb8e62f2b164c69ba2`、`0b8829a864ff53ad0ad2c7ded56ef433325a836a`；HTTP 回归逐一保存、读取这些提交的修订，并在服务重启后再次读取，未知提交和旧 API v5 仍被拒绝。不会仅凭提交格式或 API 版本号放行未知版本。打包器提交同时写入环境变量 `TOMCAT_COOK_ENGINE_COMMIT` 便于核对。
-- 更换打包器提交时同步更新 `Dockerfile` 顶部的 `ARG ENGINE_COMMIT`、`ProjectFiles` 的明确兼容列表和前端锁文件；`source`/`player`/`managed` 阶段会重新检出并构建。旧版本仅在播放器和编辑器兼容回归通过后保留。
+- 更换打包器提交时同步更新 `Dockerfile.worker` 顶部的 `ARG ENGINE_COMMIT`、`ProjectFiles` 的明确兼容列表和前端锁文件；`source`/`player`/`managed` 阶段会重新检出并构建。旧版本仅在播放器和编辑器兼容回归通过后保留。
 
 C# 项目打包（替代桌面 `CompileManaged`）：
 
@@ -189,7 +199,7 @@ C# 项目打包（替代桌面 `CompileManaged`）：
 - 官方 Editor 发行版没有独立的 CLI 下载：`TomCatCLI.exe` 与 Managed 工具链、Player Template 一起经 Enigma Virtual Box 打包进单个 `TomCat.exe`（上游 `Scripts/Package-Editor.ps1` + `editor.evb`）。调用方式为 `TomCat.exe --cli cook ...`：包装器（`TomCatInputApp.cpp`）校验内嵌清单，把匹配的运行时解压/复用到 `%LOCALAPPDATA%\TomCat\Editor\Runtime`，再以子进程运行真正的 CLI 并**透传退出码**。因此 `Cook__CliPath` 可指向 `TomCat.exe`、`Cook__CliArgs=--cli cook --project "{project}" --output "{output}"`；失败诊断照常进入发布记录，worker 的超时整树终止对无超时的包装器同样有效。注意运行账户需要可写的用户配置目录（运行时解压位置）。
 - 源码构建可直接得到独立 CLI（不经过 EVB 打包）：VS 开发者环境中执行 `vendor/premake/bin/premake5.exe --file=Tools/premake5.lua vs2022` 后 `msbuild Tools/Tools.sln -p:Configuration=Release -p:Platform=x64`，产物 `Tools/bin/Release-windows-x86_64/TomCatCLI/TomCatCLI.exe` 直接作为 `Cook__CliPath`。`vendor/premake/bin` 不在仓库内时，按 `Scripts/ReleaseToolVersions.json` 锁定的版本（5.0.0-beta7，含 SHA-256）下载释放即可。CLI 必须与 Managed 工具链构建自相近的提交：托管 ABI（ManagedApiV1）随引擎演进，旧 CLI 配新工具链会在编译校验时报 `TCSP0014: ManagedApiV1 table 不兼容`——遇到该错误先重编 CLI。本机重编时可顺带带上 `54697ebf` 之后的两个 scripting 修复。
 
-CLI 与网页引擎应来自兼容的引擎提交：桌面 CLI 与 `engine.lock.json` 保持一致；容器内打包器用 `Dockerfile` 固定的提交，与 `engine.lock.json` 的 Managed API 版本必须相同。
+CLI 与网页引擎应来自兼容的引擎提交：桌面 CLI 与 `engine.lock.json` 保持一致；容器内打包器用 `Dockerfile.worker` 固定的提交，与 `engine.lock.json` 的 Managed API 版本必须相同。
 
 ## 验收
 
@@ -278,7 +288,7 @@ Mail__Password=your-smtp-password
 
 所有写请求仍需要 `X-TomCat-Request: 1`。完成注册使用一次性邮箱验证令牌。
 
-验证：`dotnet build TomCat.Api -c Release`，然后 `node --test tests/*.test.mjs`。测试使用开发邮件目录读取真实邮件内容，不提供获取验证码的 HTTP 接口。
+验证：`dotnet build TomCat.Api -c Release`、`dotnet build TomCat.BuildWorker -c Release`，然后 `node --test tests/*.test.mjs`。测试使用开发邮件目录读取真实邮件内容，不提供获取验证码的 HTTP 接口。
 
 ### Resend API（Railway 推荐）
 
