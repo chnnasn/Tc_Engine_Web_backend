@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using TomCat.Build;
 
@@ -181,14 +183,33 @@ public sealed class BuildRunner : BackgroundService
             if (length != file.Size || Convert.ToHexStringLower(hash.GetHashAndReset()) != file.ContentHash)
                 throw new InvalidOperationException("资源校验失败：" + file.Path);
         }
-        const string scenePath = "Assets/Scene/WebScene.tomcat";
+        // The saved bundle may already contain the active scene. Reuse its exact
+        // asset path: creating another .tcmeta with the same handle is rejected
+        // by the engine's duplicate-identity checks.
+        string? scenePath = null;
+        foreach (var metadata in input.Files.Where(file => file.Path.EndsWith(".tomcat.tcmeta", StringComparison.Ordinal)))
+        {
+            var text = await File.ReadAllTextAsync(Path.Combine(directory, metadata.Path.Replace('/', Path.DirectorySeparatorChar)), cancellationToken);
+            var handle = Regex.Match(text, @"^\s*Handle:\s*([0-9]+)\s*$", RegexOptions.Multiline);
+            if (!handle.Success || !ulong.TryParse(handle.Groups[1].Value, out var value) || value != scene) continue;
+            if (scenePath is not null) throw new InvalidOperationException("多个场景使用相同资源句柄，请先修复场景元数据。");
+            scenePath = metadata.Path[..^7];
+        }
+        var existingScene = scenePath is not null;
+        if (scenePath is null)
+        {
+            scenePath = $"Assets/Scene/WebScene-{scene}.tomcat";
+            for (var suffix = 1; paths.Contains(scenePath) || paths.Contains(scenePath + ".tcmeta"); suffix++)
+                scenePath = $"Assets/Scene/WebScene-{scene}-{suffix}.tomcat";
+        }
         var sceneFile = Path.Combine(directory, scenePath.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(sceneFile)!);
         Directory.CreateDirectory(Path.Combine(directory, "ProjectSettings"));
         await File.WriteAllTextAsync(sceneFile, input.Archive, new UTF8Encoding(false), cancellationToken);
-        await File.WriteAllTextAsync(sceneFile + ".tcmeta", $"SchemaVersion: 2\nAsset:\n  Handle: {scene}\n  Type: Scene\n  ImportSettings:\n    {{}}\n  SubAssets:\n    []\n", cancellationToken);
+        if (!existingScene)
+            await File.WriteAllTextAsync(sceneFile + ".tcmeta", $"SchemaVersion: 2\nAsset:\n  Handle: {scene}\n  Type: Scene\n  ImportSettings:\n    {{}}\n  SubAssets:\n    []\n", cancellationToken);
         await File.WriteAllTextAsync(Path.Combine(directory, "ProjectSettings", "BuildSettings.json"),
-            $"{{\"schemaVersion\":1,\"entrySceneHandle\":{scene},\"scenes\":[{{\"handle\":{scene},\"enabled\":true,\"pathHint\":\"Scene/WebScene.tomcat\"}}]}}", cancellationToken);
+            JsonSerializer.Serialize(new { schemaVersion = 1, entrySceneHandle = scene, scenes = new[] { new { handle = scene, enabled = true, pathHint = scenePath[7..] } } }), cancellationToken);
     }
     private async Task Callback(BuildRequested job, string operation, Func<HttpRequestMessage> create, CancellationToken cancellationToken)
     {
@@ -215,6 +236,7 @@ public sealed class BuildRunner : BackgroundService
         var start = new ProcessStartInfo(settings.Cli)
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = directory,
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
         };
         foreach (var argument in SplitArguments(settings.Arguments, Path.Combine(directory, "Project.tcproj"), output)) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("无法启动构建工具。");

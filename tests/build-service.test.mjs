@@ -16,13 +16,14 @@ async function until(check, timeout = 15000) {
   while (Date.now() < end) { const value = await check(); if (value) return value; await new Promise(r => setTimeout(r, 100)) }
   throw new Error('Expected build state did not arrive')
 }
-function savedProject(db) {
+function savedProject(db, extraFiles = {}) {
   const project = id(), revision = id(), now = new Date().toISOString(), files = []
   db.prepare('INSERT OR IGNORE INTO users(id,username,password_hash,created_at) VALUES(?,?,?,?)').run('owner', 'owner', 'test', now)
   db.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?,?,?)').run(project, 'owner', 'Build test', '', '2D', revision, now, now)
-  for (const path of ['Project.tcproj', 'ProjectSettings/BuildSettings.json', 'ProjectSettings/ProjectSettings.json', 'ProjectSettings/PlayerSettings.json']) {
-    const bytes = Buffer.from(path + project), uploadId = id()
-    db.prepare('INSERT INTO uploads VALUES(?,?,?,?,?,?)').run(uploadId, project, sha(bytes), bytes.length, bytes, now)
+  const sources = { 'Project.tcproj': 'project', 'ProjectSettings/BuildSettings.json': '{}', 'ProjectSettings/ProjectSettings.json': '{}', 'ProjectSettings/PlayerSettings.json': '{}', ...extraFiles }
+  for (const [path, content] of Object.entries(sources)) {
+    const bytes = Buffer.from(content), uploadId = db.prepare('SELECT id FROM uploads WHERE project_id=? AND content_hash=?').get(project, sha(bytes))?.id ?? id()
+    db.prepare('INSERT OR IGNORE INTO uploads VALUES(?,?,?,?,?,?)').run(uploadId, project, sha(bytes), bytes.length, bytes, now)
     files.push({ path, uploadId, size: bytes.length, contentHash: sha(bytes) })
   }
   const payload = { schemaVersion: 2, engineCommit: currentEngineCommit, sceneHandle: '12007672766582721512', archive: 'SchemaVersion: 11\nSceneName: test\nEntities: []\n', files }
@@ -123,6 +124,38 @@ test('worker deduplicates events, bounds concurrency and kills a cancelled build
   db.prepare('DELETE FROM publications WHERE project_id=?').run(project.project)
   await new Promise(r => setTimeout(r, 9000))
   assert.equal(await readFile(finished, 'utf8').catch(() => null), null, 'revoked lease must kill the compiler process')
+})
+
+test('worker keeps the active scene identity and other scenes without duplicate metadata', { timeout: 30000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'tomcat-build-scenes-'))
+  const cli = join(directory, 'cli.mjs'), port = await freePort()
+  await writeFile(cli, `import assert from 'node:assert/strict'; import {readFileSync,writeFileSync,readdirSync} from 'node:fs';
+    assert.match(readFileSync('Assets/Scene/关卡一.tomcat','utf8'),/SceneName: test/);
+    assert.equal(readFileSync('Assets/Scene/WebScene.tomcat','utf8'),'inactive scene');
+    assert.equal(readdirSync('Assets/Scene').length,4);
+    assert.equal(JSON.parse(readFileSync('ProjectSettings/BuildSettings.json','utf8')).scenes[0].pathHint,'Scene/关卡一.tomcat');
+    assert.match(readFileSync('ProjectSettings/BuildSettings.json','utf8'),/12007672766582721512/);
+    writeFileSync(process.argv.at(-1),'scene identity preserved');`)
+  const api = await startService('TomCat.Api', { Storage__Directory: directory, Build__Secret: buildSecret, Build__WorkerUrl: `http://127.0.0.1:${port}`, Build__RetrySeconds: '1' })
+  const worker = await startBuildWorker(api.baseUrl, port, cli)
+  const db = new DatabaseSync(join(directory, 'tomcat.db')); db.exec('PRAGMA busy_timeout=5000;')
+  t.after(async () => { await worker.stop(); await api.stop(); db.close() })
+  const project = savedProject(db, {
+    'Assets/Scene/关卡一.tomcat': 'stale active archive',
+    'Assets/Scene/关卡一.tomcat.tcmeta': 'SchemaVersion: 2\nAsset:\n  Handle: 12007672766582721512\n  Type: Scene\n',
+    'Assets/Scene/WebScene.tomcat': 'inactive scene',
+    'Assets/Scene/WebScene.tomcat.tcmeta': 'SchemaVersion: 2\nAsset:\n  Handle: 42\n  Type: Scene\n',
+  })
+  enqueue(db, project)
+  const result = await until(() => { const row = db.prepare('SELECT status,error FROM publications WHERE project_id=?').get(project.project); return row.status !== 'pending' && row })
+  assert.equal(result.status, 'published', result.error)
+  const duplicate = savedProject(db, {
+    'Assets/Scene/one.tomcat': 'one', 'Assets/Scene/one.tomcat.tcmeta': 'Asset:\n  Handle: 12007672766582721512\n',
+    'Assets/Scene/two.tomcat': 'two', 'Assets/Scene/two.tomcat.tcmeta': 'Asset:\n  Handle: 12007672766582721512\n',
+  })
+  enqueue(db, duplicate)
+  const rejected = await until(() => { const row = db.prepare('SELECT status,error FROM publications WHERE project_id=?').get(duplicate.project); return row.status !== 'pending' && row })
+  assert.equal(rejected.status, 'failed'); assert.match(rejected.error, /相同资源句柄/)
 })
 
 test('schema 9 pending publications migrate to durable build jobs', { timeout: 30000 }, async t => {

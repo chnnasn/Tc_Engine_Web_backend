@@ -9,6 +9,8 @@ if (Environment.GetEnvironmentVariable("PORT") is { Length: > 0 } port)
 }
 builder.Logging.ClearProviders();
 builder.Logging.AddSimpleConsole();
+builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 16384);
 builder.Services.AddSingleton<WorkerSettings>();
 builder.Services.AddSingleton<BuildRunner>();
