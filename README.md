@@ -92,7 +92,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## Railway 部署
 
-1. API 服务连接 `Tc_Engine_Web_backend` GitHub 仓库，使用根目录的 `Dockerfile`，健康检查设为 `/health`，失败重启最多 10 次。现有服务仍使用 `railway.json`；Railway 已停止允许新服务启用这种配置文件，新服务直接在服务设置中配置。此检查直接访问 Railway 服务容器，不经过前端 Netlify 域名。
+1. API 服务连接 `Tc_Engine_Web_backend` GitHub 仓库，在服务设置中指定 Dockerfile Path 为 `Dockerfile`，健康检查 `/health`（60 秒），失败重启最多 10 次。Watch Paths 设为 `/TomCat.Api/**`、`/shared/**`、`/Dockerfile`、`/NuGet.Config`。本仓库不放根目录 `railway.json`，避免 GitHub 自动部署时用 API 配置覆盖同仓库的 worker；两个服务分别保存构建设置，不设置 Railway Config File。健康检查直接访问服务容器，不经过 Netlify。
 2. 给服务添加 Volume，挂载路径必须填写 `/data`。数据库和登录 Cookie 密钥都依赖此卷；没有卷时，重新部署会丢失数据并使现有登录失效。
 3. 在 Networking 中生成 Railway 域名。Railway 自动注入 `PORT`，无需手工填写端口或启动命令。
 4. 保持单副本运行。当前使用单文件 SQLite 和单个 Railway Volume，不支持多副本并发部署。
