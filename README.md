@@ -106,7 +106,7 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 
 ## 接口
 
-除健康检查、注册、邮箱验证、注册完成、登录、当前浏览器保存账号、公开个人主页、社区浏览和已发布作品的公开游玩接口外，接口均要求登录；其他用户的项目返回 404。
+除健康检查、注册、邮箱验证、注册完成、登录、当前浏览器保存账号、公开个人主页、社区浏览、内置示例和已发布作品的公开游玩接口外，接口均要求登录；其他用户的项目返回 404。
 
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
@@ -120,9 +120,15 @@ docker run --rm -p 8080:8080 -v tomcat-data:/data tomcat-api
 | GET / POST | `/v1/projects/{id}/revisions` | 版本列表 / 保存不可变修订 |
 | GET | `/v1/projects/{id}/revisions/{revisionId}` | 读取原始修订 JSON |
 | POST / GET / DELETE | `/v1/projects/{id}/publish` | 发布 `{ title, description }` / 查询状态 / 取消发布 |
+| GET | `/v1/games` | 内置示例目录（游客可访问），固定顺序，与玩家作品分开 |
+| GET | `/v1/games/{id}/package` | 示例游戏包，ETag 为内容 SHA-256；未知示例返回 404 |
+| GET | `/v1/games/{id}/cover` | 示例封面 PNG |
+| GET | `/v1/games/{id}/source` | 示例源码 ZIP；没有源码的示例返回 404 |
 | GET | `/v1/games/published` | 公开列出已发布作品（游客可访问） |
 | GET | `/v1/games/published/{id}` | 公开作品详情（游客可访问） |
 | GET | `/v1/games/published/{id}/package` | 公开游戏包下载，ETag 为内容 SHA-256（游客可访问） |
+
+内置示例由 `TomCat.Api/Games/catalog.json` 描述，随 API 镜像发布。当前为 return、shelter、rougelike、physics-lab；封面和 TCPACK01 v8 游戏包必须存在，源码 ZIP 可选，physics-lab 没有源码。这些路由与 `/v1/games/published` 无关，不要再增加会挡住 `published` 的 `GET /v1/games/{id}`。
 
 邮箱为唯一登录标识，不区分大小写；密码 12–128 字符。创建项目使用 `{ name, description, template }`，模板为 `2D` 或 `空白`。PUT 更新名称和描述，模板创建后固定。一般请求体上限 16 MiB，单个资源上传上限 8 MiB。
 
