@@ -101,7 +101,11 @@ test('ASP.NET + SQLite HTTP lifecycle', { timeout: 90000 }, async t => {
     await t.test('sample game packages are public, current and revalidated by content hash', async () => {
       // 游客未登录也应能列出并下载示例包（作品详情页对未登录用户开放）。
       const catalog = await (await request('/v1/games', { user: 'anonymous' })).json()
-      assert.deepEqual(catalog.map(entry => entry.id), ['desert', 'forest', 'puzzle'])
+      assert.deepEqual(catalog.map(entry => entry.id), ['return', 'shelter', 'rougelike', 'physics-lab'])
+      assert.equal(catalog[0].title, 'Return / Echo World')
+      assert.equal(catalog[0].image, '/v1/games/return/cover')
+      assert.equal(catalog[0].sourceUrl, '/v1/games/return/source')
+      assert.equal(catalog[3].sourceUrl, null)
       for (const entry of catalog) {
         const response = await request(`/v1/games/${entry.id}/package`, { user: 'anonymous' })
         assert.equal(response.status, 200)
