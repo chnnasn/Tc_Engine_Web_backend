@@ -53,6 +53,8 @@ public static class Administration
             var week = Activity.Day(Activity.Now - 6 * 86400);
             return Results.Ok(Rows(connection, """
                 SELECT (SELECT COUNT(*) FROM users) AS users,
+                (SELECT COUNT(*) FROM projects) AS projects,
+                (SELECT COUNT(*) FROM publications p WHERE p.status='published' AND NOT EXISTS(SELECT 1 FROM publication_moderation m WHERE m.project_id=p.project_id)) AS publishedGames,
                 (SELECT COUNT(*) FROM users WHERE is_suspended=1) AS suspendedUsers,
                 (SELECT COUNT(*) FROM users WHERE date(created_at,'+8 hours')=$today) AS newUsersToday,
                 (SELECT COUNT(*) FROM activity_daily WHERE day=$today) AS dailyActiveUsers,
